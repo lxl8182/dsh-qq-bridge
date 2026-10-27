@@ -1,4 +1,5 @@
 import { inspectNapcatTag } from './napcat-tags.js'
+import Schema from '@deepseek-ai/schemastery'
 import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -11,17 +12,12 @@ import { getNapcatRecoveryStatus } from './napcat-recovery.js'
 export const QQ_BRIDGE_SETTINGS_NAMESPACE = 'dsh-qq-bridge'
 export const QQ_BRIDGE_NAPCAT_RPC_CHANNEL = '/dsh-qq-bridge-napcat'
 
-interface SettingsScope<T> {
-  get(): T
-  watch(callback: (next: T, prev: T) => void | Promise<void>): () => void
+export interface BridgeConfigRef {
+  get(): unknown
 }
 
 interface SettingsProvider {
-  register<T>(
-    ns: string,
-    schema: unknown,
-    options?: { base?: Partial<T>; applies?: 'live' | 'restart' },
-  ): SettingsScope<T>
+  configure(options: { auto: boolean }, owner?: unknown): () => void
 }
 
 interface RpcConnection {
@@ -35,6 +31,8 @@ interface RpcConnection {
 }
 
 export interface QqBridgeSettingsCtx {
+  fiber?: unknown
+  on?(event: string, callback: () => void): () => void
   inject?(
     services: readonly string[],
     cb: (ctx: QqBridgeSettingsCtx & { settings?: SettingsProvider }) => void,
@@ -68,64 +66,48 @@ type SchemaBuilder = {
   optional?(): SchemaBuilder
 }
 
+export const QqBridgeHostConfig = (await buildQqBridgeSettingsSchema() as { volatile(): unknown }).volatile()
+
+export function readBridgeConfig(value: DshQqBridgeConfig | BridgeConfigRef): DshQqBridgeConfig {
+  return DshQqBridgeConfig.parse('get' in value ? value.get() : value)
+}
+
 export async function installQqBridgeSettings(
   ctx: QqBridgeSettingsCtx,
-  entry: DshQqBridgeConfig,
+  entry: DshQqBridgeConfig | BridgeConfigRef,
   onChange?: (next: DshQqBridgeConfig) => void | Promise<void>,
-): Promise<InstalledQqBridgeSettings | undefined> {
-  await cleanupLegacyProfileInsert(resolveDshHome()).catch((err) => {
-    console.warn(`[dsh-qq-bridge] failed to clean legacy profile insert: ${err instanceof Error ? err.message : String(err)}`)
-  })
-  const schema = await buildQqBridgeSettingsSchema()
-  if (schema === undefined || ctx.inject === undefined) return undefined
-
-  let current = entry
+): Promise<InstalledQqBridgeSettings> {
+  let current = readBridgeConfig(entry)
   const disposers: Array<() => void> = []
-  const rpcFiber = ctx.inject(['connection'], (connectionCtx) => {
-    const connection = connectionCtx.connection
-    if (connection === undefined) return
-    const disposable = registerNapcatStatusRpc(connection)
-    if (disposable !== undefined) connectionCtx.effect?.(() => disposable, 'dsh-qq-bridge.napcat-rpc')
+  let tail = Promise.resolve()
+  const refresh = () => {
+    const next = readBridgeConfig(entry)
+    tail = tail.then(async () => {
+      await onChange?.(next)
+      current = next
+    }).catch((error) => {
+      console.error(`[dsh-qq-bridge] configuration activation failed: ${error instanceof Error ? error.message : String(error)}`)
+    })
+    return tail
+  }
+  await onChange?.(current)
+  const off = ctx.on?.('loader/volatile-update', () => { void refresh() })
+  if (off) disposers.push(off)
+  const rpcFiber = ctx.inject?.(['connection'], (child) => {
+    const disposable = registerNapcatStatusRpc(child.connection ?? {})
+    if (disposable) child.effect?.(() => disposable, 'dsh-qq-bridge.napcat-rpc')
   }, 'dsh-qq-bridge.napcat-rpc')
-  if (rpcFiber && typeof rpcFiber === 'object' && typeof rpcFiber.dispose === 'function') {
-    disposers.push(() => rpcFiber.dispose())
-  }
-  const fiber = ctx.inject(['settings'], (settingsCtx) => {
-    const settings = settingsCtx.settings
-    if (settings === undefined) return
-    const scope = settings.register<DshQqBridgeConfig>(QQ_BRIDGE_SETTINGS_NAMESPACE, schema, {
-      base: entry,
-      applies: 'restart',
-    })
-    current = DshQqBridgeConfig.parse(scope.get())
-    Promise.resolve(onChange?.(current)).catch((err) => {
-      console.warn(`[dsh-qq-bridge] failed to apply initial settings: ${err instanceof Error ? err.message : String(err)}`)
-    })
-    const unwatch = scope.watch((next) => {
-      current = DshQqBridgeConfig.parse(next)
-      Promise.resolve(onChange?.(current)).catch((err) => {
-        console.warn(`[dsh-qq-bridge] failed to apply settings update: ${err instanceof Error ? err.message : String(err)}`)
-      })
-      installBundledPreset().catch((err) => {
-        console.warn(`[dsh-qq-bridge] failed to refresh QQ agent preset: ${err instanceof Error ? err.message : String(err)}`)
-      })
-    })
-    settingsCtx.effect?.(() => unwatch, 'dsh-qq-bridge.settings.watch')
-    installBundledPreset().catch((err) => {
-      console.warn(`[dsh-qq-bridge] failed to refresh QQ agent preset: ${err instanceof Error ? err.message : String(err)}`)
-    })
-  }, 'dsh-qq-bridge.settings')
-  if (fiber && typeof fiber === 'object' && typeof fiber.dispose === 'function') {
-    disposers.push(() => fiber.dispose())
-  }
-
+  if (rpcFiber) disposers.push(() => rpcFiber.dispose())
+  const settingsFiber = ctx.inject?.(['settings'], (child) => {
+    if (child.settings) child.effect?.(
+      () => child.settings!.configure({ auto: false }, ctx.fiber),
+      'dsh-qq-bridge.settings-page',
+    )
+  }, 'dsh-qq-bridge.settings-page')
+  if (settingsFiber) disposers.push(() => settingsFiber.dispose())
   return {
-    current() {
-      return current
-    },
-    dispose() {
-      for (const dispose of disposers.splice(0)) dispose()
-    },
+    current: () => current,
+    dispose() { for (const dispose of disposers.splice(0)) dispose() },
   }
 }
 
@@ -225,6 +207,9 @@ async function buildQqBridgeSettingsSchema(): Promise<unknown | undefined> {
       preset: z.string().default('dsh-qq-bridge'),
       provider: z.string().default('deepseek-official'),
       model: z.string().default('deepseek-v4-flash'),
+      // 默认思考强度。空 = 沿用适配器行为;裸 openai-completions provider 不传就
+      // 完全不思考,需显式给一个值(如 high)。
+      reasoningEffort: (z.string() ?? z.string()).default(''),
       models: z.array(z.string()).default([]),
       cwd: z.string().default('~'),
       streamText: z.boolean().default(false),
@@ -233,6 +218,7 @@ async function buildQqBridgeSettingsSchema(): Promise<unknown | undefined> {
       ackMessage: z.string().default('收到，正在处理...'),
       timeoutMs: (z.number().step?.(1).min?.(1) ?? z.number()).optional?.() ?? z.number(),
       timeoutMessage: z.string().default('agent 无响应，请稍后重试。'),
+      // 旧配置项:保留 schema 让已有 settings 继续解析,但不再注入任何 prompt。
       qqReplyStyleSkill: z.object({
         enabled: z.boolean().default(true),
         skillName: z.string().default('qq-session-reply-style'),
@@ -256,15 +242,7 @@ async function buildQqBridgeSettingsSchema(): Promise<unknown | undefined> {
 }
 
 async function loadSchemastery(): Promise<SchemasteryFactory | undefined> {
-  for (const specifier of ['@deepseek-ai/schemastery', 'schemastery']) {
-    try {
-      const mod = await import(specifier)
-      return (mod.default ?? mod) as SchemasteryFactory
-    } catch {
-      // Keep the plugin usable outside DSH, where the settings UI packages are absent.
-    }
-  }
-  return undefined
+  return Schema as unknown as SchemasteryFactory
 }
 
 async function installBundledPreset(): Promise<void> {

@@ -14,10 +14,15 @@ window.__ModuleLoader__.load({
       "deepseek-official": ["deepseek-v4-flash", "deepseek-v4-pro"],
     };
 
-    exports.inject = ["slots", "connection", "remote", "settingsScope"];
+    exports.inject = ["slots", "connection", "remote", "configForms"];
     exports.apply = function apply(ctx) {
       const connection = ctx.get("connection");
-      const scope = ctx.settingsScope.bind({ namespace: NS, decode: decodeSettings });
+      const form = ctx.configForms.get(NS);
+      const scope = {
+        getSnapshot: () => { const snap = form.getSnapshot(); return { ...snap, value: decodeSettings(snap.value || {}) }; },
+        subscribe: (listener) => form.subscribe(listener),
+        mutate: (ops, revision) => form.mutate(ops, revision),
+      };
       const injected = () => ({
         scope,
         api: connection.api,
@@ -143,7 +148,7 @@ window.__ModuleLoader__.load({
       const persist = async (ops) => {
         const latest = props.scope.getSnapshot();
         const revision = Math.max(latest.revision ?? 0, writeRevision.current ?? 0);
-        const response = await mutateSettings(props.api, { ...latest, revision }, ops);
+        const response = await mutateSettings(props.scope, { ...latest, revision }, ops);
         if (response.result.ok) writeRevision.current = response.result.value.revision;
         return response;
       };
@@ -876,12 +881,11 @@ window.__ModuleLoader__.load({
       return "";
     }
 
-    function mutateSettings(api, snapshot, ops) {
-      return api.settings.mutate({
-        ns: NS,
-        ops,
-        ...(snapshot.revision === undefined ? {} : { expectedRevision: snapshot.revision }),
-      });
+    async function mutateSettings(form, snapshot, ops) {
+      const ok = await form.mutate(ops, snapshot.revision);
+      const next = form.getSnapshot();
+      return { result: ok ? { ok: true, value: { revision: next.revision } }
+        : { ok: false, error: { message: next.error?.message || "保存失败，请刷新后重试；草稿已保留。" } } };
     }
 
     function napcatLogPathForSettings(draft, napcatStatus) {

@@ -5,11 +5,18 @@ export class MessageRouter {
     gate;
     outbound;
     pendingReply;
+    outboundWithReceipt;
     handlers = new Map();
-    constructor(gate, outbound, pendingReply) {
+    constructor(gate, outbound, pendingReply, 
+    /**
+     * 带平台回执的发送器。缺省时 `ctx.send` 退化为 `respond` 且不带 id:
+     * 旧调用方与旧传输层不需要改动,新调用方拿不到 id 时也知道自己拿不到。
+     */
+    outboundWithReceipt) {
         this.gate = gate;
         this.outbound = outbound;
         this.pendingReply = pendingReply;
+        this.outboundWithReceipt = outboundWithReceipt;
     }
     register(handler) {
         this.handlers.set(handler.name, handler);
@@ -43,7 +50,27 @@ export class MessageRouter {
             scope,
             groupId: evt.group_id,
             payload,
+            owner: this.gate.isOwner(evt),
+            messageId: evt.message_id,
+            replyTarget: evt.reply_target,
             respond,
+            send: this.outboundWithReceipt
+                ? async (text) => {
+                    try {
+                        const receipt = await this.outboundWithReceipt(scope, targetId, text, evt.reply_target);
+                        return receipt && typeof receipt === 'object' ? receipt : {};
+                    }
+                    catch (err) {
+                        // A failed send is a fact the caller must see; it is not the
+                        // same as "sent without an id".
+                        console.warn(`[dsh-qq-bridge] failed to send ${scope} message to ${targetId}: ${err instanceof Error ? err.message : String(err)}`);
+                        throw err;
+                    }
+                }
+                : async (text) => {
+                    await respond(text);
+                    return {};
+                },
         };
         if (await this.pendingReply?.handle(ctx))
             return true;

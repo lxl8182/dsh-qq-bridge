@@ -17,26 +17,36 @@ async function page(overrides: Record<string, unknown> = {}, rejectSave = false,
   } } } })
   const value = { napcat: { loginQq: 10001 }, access: { adminQq: 20002 }, ...overrides }
   const order: string[] = []
+  const mutations: Array<{ ops: any[]; expectedRevision?: number }> = []
   let revision = 7
-  const mutate = vi.fn(async (_request: any) => {
+  let failure: string | undefined
+  const mutate = vi.fn(async (ops: any[], expectedRevision?: number) => {
     order.push('save')
-    return { result: rejectSave ? { ok: false, error: { message: 'write failed' } } : { ok: true, value: { revision: ++revision } } }
+    mutations.push({ ops, expectedRevision })
+    if (rejectSave) { failure = 'write failed'; return false }
+    failure = undefined
+    revision += 1
+    return true
   })
   const call = vi.fn(async (_channel: string, endpoint: string) => {
     if (endpoint === 'tag') return { ok: true, value: { installed: true } }
     order.push('setup')
     return { ok: true, value: { state: 'ready', onebot: { wsUrl: 'ws://127.0.0.1:3001', token: 'generated' } } }
   })
-  // The subscription deliberately lags behind writes: the next mutation must use the response revision.
+  // configForms scope: reads the live revision, so the next mutation must use the revision returned by the previous write.
   const tree = helpers.QqBridgeSettingsSection({
-    scope: { getSnapshot: () => ({ status: 'ready', writable: true, revision: 7, value }) },
-    api: { settings: { mutate } }, rpc: { call },
+    scope: {
+      getSnapshot: () => ({ status: 'ready', writable: true, revision, value, ...(failure ? { error: { message: failure } } : {}) }),
+      subscribe: () => () => {},
+      mutate,
+    },
+    api: {}, rpc: { call },
   })
   function find(node: any): any {
     if (node?.type === 'button' && node.children.includes(buttonLabel)) return node
     for (const child of node?.children ?? []) { const found = find(child); if (found) return found }
   }
-  return { tree, button: find(tree), mutate, call, states, order, helpers, value }
+  return { tree, button: find(tree), mutate, call, states, order, mutations, helpers, value }
 }
 
 describe('settings page actions', () => {
@@ -52,8 +62,8 @@ describe('settings page actions', () => {
     const view = await page()
     await view.button.props.onClick()
     expect(view.order).toEqual(['save', 'setup', 'save'])
-    expect(view.mutate.mock.calls[1][0].expectedRevision).toBe(8)
-    expect(view.mutate.mock.calls[1][0].ops).toContainEqual({ op: 'set', path: ['enabled'], value: true })
+    expect(view.mutations[1].expectedRevision).toBe(8)
+    expect(view.mutations[1].ops).toContainEqual({ op: 'set', path: ['enabled'], value: true })
   })
 
   it('does not start NapCat when saving fails', async () => {
@@ -69,7 +79,7 @@ describe('settings page actions', () => {
     await view.button.props.onClick()
     expect(view.mutate).toHaveBeenCalledTimes(1)
     expect(view.call).not.toHaveBeenCalled()
-    expect(view.mutate.mock.calls[0][0].ops).toContainEqual({ op: 'set', path: ['enabled'], value: true })
+    expect(view.mutations[0].ops).toContainEqual({ op: 'set', path: ['enabled'], value: true })
   })
 
   it('keeps platform-specific cards and actions separate', async () => {

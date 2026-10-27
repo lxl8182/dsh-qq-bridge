@@ -1,9 +1,13 @@
+import { AgentRpcHandler } from './handlers/agent.js';
+import { DshAgentExecutor } from './handlers/dsh-executor.js';
 import type { DshStorageDomainRuntime } from './handlers/custom-memory.js';
 import { BridgeModelSelection } from './handlers/model-control.js';
 import { DshQqBridgeConfig } from './config.js';
 import { OnebotMessageEvent, PlatformReplyTarget } from './onebot/types.js';
 import type { MessageTargetId } from './onebot/types.js';
 import { InteractionCtxLike } from './interactions.js';
+import type { BridgeConfigRef } from './settings.js';
+import { QqBridgeEvents } from './bridge-events.js';
 /** DSH live agent 最小画面。 */
 interface DshAgent {
     followup(message: {
@@ -16,6 +20,10 @@ interface DshAgent {
 }
 /** 结构性描述 DSH 服务;不硬依赖 DSH 内部类型。 */
 interface DshCtx extends InteractionCtxLike {
+    profileContext?: {
+        home: string;
+    };
+    get?(name: string): unknown;
     agentLoop?: {
         createAgent(ownerCtx: unknown, options: {
             sessionId: string;
@@ -112,18 +120,30 @@ interface BridgeChatClient {
  * M3:每个 QQ 会话持有常驻 DSH live agent,实现多轮上下文。
  * 依赖:agentLoop / agentPresets / sessionQuery。
  */
+export declare const Config: unknown;
 export declare const name = "dsh-qq-bridge";
 export declare const inject: string[];
-export declare function apply(ctx: DshCtx, options: DshQqBridgeConfig): Promise<() => Promise<void>>;
+export declare function apply(ctx: DshCtx, options: DshQqBridgeConfig | BridgeConfigRef): Promise<() => Promise<void>>;
 declare const _default: {
     name: string;
     inject: string[];
+    Config: unknown;
     apply: typeof apply;
 };
 export default _default;
 /** 判断是否启用 agent 完成后的管理员主动提醒。 */
 export declare function agentReplyNotificationsEnabled(cfg: DshQqBridgeConfig): boolean;
+/**
+ * 从一个平台动作响应里取出消息 id。
+ *
+ * 官方 SDK 返回对象里 id 的键名随版本变化(c2c/group 都可能带 `id`、
+ * `messageId` 或 `msgId`),NapCat 用 OneBot 的 `data.message_id`。这里只做只读
+ * 提取:取不到就是取不到,不合成假 id。
+ */
+export declare function readPlatformMessageId(result: unknown): string | undefined;
 export declare function attachSessionToWorkspace(registry: DshWorkspaceRegistry, sessionId: string, cwd: string): Promise<void>;
+/** Forward completed followups only for sessions bound by an admitted QQ input. */
+export declare function registerQqSessionOutput(ctx: Pick<DshCtx, 'on'>, executor: Pick<DshAgentExecutor, 'currentSessionId'>, bridge: QqBridgeEvents | undefined, handler: Pick<AgentRpcHandler, 'sendSessionOutput'>): () => void;
 export declare function createAgentReplyNotifier(ctx: Pick<DshCtx, 'on'>, client: Pick<BridgeChatClient, 'sendPrivate'>, adminTarget: MessageTargetId): () => void;
 /** 监听 DSH 会话完成事件,向管理员 QQ 发送一条轻量提醒。 */
 export declare function registerAgentReplyNotifier(ctx: Pick<DshCtx, 'on'>, client: Pick<BridgeChatClient, 'sendPrivate'>, adminTarget: MessageTargetId): () => void;

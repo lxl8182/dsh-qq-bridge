@@ -9,11 +9,26 @@ import { BridgeModelInfo, BridgeModelSelection, BridgeModelSelectionRef, Permiss
  * - 简易形状(用于本地测试): `{ type: 'assistant/message', content: [...] }`。
  */
 export declare function extractLastAssistantText(events: readonly unknown[]): string | null;
+/** Read one committed turn without mixing in later followups. */
+export declare function eventsForTurn(events: readonly unknown[], turn: number): readonly unknown[];
 /**
  * DSH 工具调用没有被运行时识别时,模型可能把 DSML 协议文本当普通 text 输出。
  * 这类内容不是有效回复,也不应透传给 QQ 用户。
  */
 export declare function isUnexecutedDsmlToolCall(text: string): boolean;
+/**
+ * 提取 session surface 中最后一条 user 消息的 id 与文本。
+ *
+ * 这是「这次输入」在 DSH 侧的稳定标识:每条用户消息的 id 由宿主生成且唯一,
+ * 因此外部可以据此把一次删除/发送与具体的 DSH 轮次对上,而不必猜轮次序号。
+ *
+ * 兼容两种事件形状(与 `extractLastAssistantText` 同一套):
+ * `{ type, data: { message } }` 与简易的 `{ type, content }`。
+ */
+export declare function extractLastUserMessage(events: readonly unknown[]): {
+    id: string;
+    text: string;
+} | null;
 /** 一个可投料、等待、可释放销毁的 DSH agent 会话。 */
 export interface DshRenderedAgent {
     followup(message: {
@@ -51,7 +66,9 @@ export interface DshServiceHandles {
      * 投递用户消息并等待本轮完成。
      * @param onChunk 可选分段回调:agent 产出过程中的文本增量,便于流式回发。
      */
-    deliver(agent: DshRenderedAgent, prompt: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void): Promise<void>;
+    deliver(agent: DshRenderedAgent, prompt: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void): Promise<{
+        messageId: string;
+    } | void>;
     /** 读取会话 surface(events)以提取本轮回复。 */
     readSurface(sessionId: string): Promise<readonly unknown[]>;
 }
@@ -73,6 +90,8 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
     private sessionSelections;
     private selectionRefs;
     private queues;
+    /** 每个 sessionKey 最近一轮在 DSH 侧的会话与用户消息 id。 */
+    private turnIdentities;
     /**
      * 本 executor 实例(即一次插件挂载/一次 host boot)唯一的后缀。
      * 避免跨 host 重启复用固定 sessionId 时,与磁盘上残留的旧会话发生 id collision。
@@ -83,12 +102,25 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
         defaultCwd?: string;
         defaultProvider?: string;
         defaultModel?: string;
+        defaultReasoningEffort?: string;
         models?: readonly string[];
         resolveModelSelection?: (selection: BridgeModelSelection) => Promise<BridgeModelSelection>;
         listModels?: (provider: string) => Promise<BridgeModelInfo[]>;
         executeCommand?: DshCommandExecutor;
     });
     run(sessionKey: string, payload: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void): Promise<string>;
+    prepareSession(sessionKey: string): Promise<string>;
+    retireSessionId(sessionId: string): Promise<void>;
+    /**
+     * 最近完成的一轮在 DSH 侧的会话与用户消息 id。
+     *
+     * 只读:两个 id 都由宿主生成,桥接层只是把它们报告给订阅方。没有发生过一轮
+     * 时返回 undefined,而不是编造一个。
+     */
+    lastTurnIdentity(sessionKey: string): {
+        sessionId: string;
+        messageId: string;
+    } | undefined;
     private runNow;
     runPermissionCommand(sessionKey: string, preset?: string): Promise<string>;
     /** 优先读 live agent 的实时会话日志,缺省则退回持久化 surface。 */
@@ -107,6 +139,13 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
     getCwd(sessionKey: string): string;
     /** 释放全部 live agent(插件 teardown 时调用)。 */
     disposeAll(): Promise<void>;
+    /**
+     * 当前 QQ 会话对应的 DSH session id,尚未建会话时为 undefined。
+     *
+     * 只读:把「同一 QQ 来源」和「同一 DSH 会话」关联起来,供外部按会话记录或退役;
+     * 它不创建会话也不改变映射。
+     */
+    currentSessionId(sessionKey: string): string | undefined;
     get liveSessionCount(): number;
     private enqueue;
     private getOrCreateSessionAgent;

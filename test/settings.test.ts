@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { installQqBridgeSettings } from '../src/settings.js'
+import { installQqBridgeSettings, QqBridgeHostConfig } from '../src/settings.js'
 import { DshQqBridgeConfig } from '../src/config.js'
 
 describe('QQ bridge settings runtime wiring', () => {
@@ -13,51 +13,30 @@ describe('QQ bridge settings runtime wiring', () => {
     else process.env.DSH_HOME = previousDshHome
   })
 
-  it('applies the saved settings snapshot as soon as the settings service attaches', async () => {
-    process.env.DSH_HOME = await mkdtemp(join(tmpdir(), 'dsh-qq-bridge-settings-runtime-'))
-    const entry = DshQqBridgeConfig.parse({})
-    const saved = DshQqBridgeConfig.parse({
-      enabled: true,
-      platform: 'napcat',
-      napcat: {
-        loginQq: 554616801,
-        wsUrl: 'ws://127.0.0.1:3001',
-        token: 'token-from-settings',
-      },
-      access: {
-        adminQq: 3678586949,
-        mode: 'whitelist',
-        allowlist: [],
-        commandPrefix: '',
-      },
-    })
+  it('reads the volatile entry and refreshes after a scoped Loader update', async () => {
+    const saved = DshQqBridgeConfig.parse({ enabled: false })
+    const parsed = (QqBridgeHostConfig as (value: unknown) => { get(): DshQqBridgeConfig })(saved)
+    expect(typeof parsed.get).toBe('function')
+    expect(parsed.get().enabled).toBe(false)
+    expect(Object.isFrozen(parsed.get())).toBe(true)
+    let current = saved
+    let refresh: (() => void) | undefined
     const applied: DshQqBridgeConfig[] = []
     const ctx = {
-      inject(services: readonly string[], cb: (child: unknown) => void) {
-        if (services.includes('settings')) {
-          cb({
-            settings: {
-              register() {
-                return {
-                  get: () => saved,
-                  watch: () => () => {},
-                }
-              },
-            },
-            effect: () => {},
-          })
-        }
-        return { dispose() {} }
+      on(event: string, cb: () => void) {
+        expect(event).toBe('loader/volatile-update')
+        refresh = cb
+        return () => { refresh = undefined }
       },
     }
-
-    await installQqBridgeSettings(ctx, entry, (next) => {
-      applied.push(next)
-    })
-
+    const settings = await installQqBridgeSettings(ctx, { get: () => current }, next => { applied.push(next) })
     expect(applied).toHaveLength(1)
-    expect(applied[0].enabled).toBe(true)
-    expect(applied[0].napcat.token).toBe('token-from-settings')
-    expect(applied[0].napcat).not.toHaveProperty('selfKeepAlive')
+    current = DshQqBridgeConfig.parse({ enabled: true })
+    refresh!()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(applied[1].enabled).toBe(true)
+    expect(settings.current().enabled).toBe(true)
+    settings.dispose()
+    expect(refresh).toBeUndefined()
   })
 })

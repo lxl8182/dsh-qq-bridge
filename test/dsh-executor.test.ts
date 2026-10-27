@@ -57,6 +57,26 @@ function makeMock(repliesBySession: Record<string, unknown[]>) {
 }
 
 describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
+  it('binds the reply and identity to the delivered turn even when followups finish before idle', async () => {
+    const sid = `qq-${hashKey('private:10001')}`
+    const message = (id: string, kind: string, text: string) => ({ type: 'user/message',
+      data: { id, source: { kind }, content: [{ type: 'text', text }] } })
+    const reply = (text: string) => ({ type: 'assistant/message', data: {
+      message: { content: [{ type: 'text', text }] } } })
+    const { dsh } = makeMock({ [sid]: [
+      { type: 'turn/start', data: { turn: 1 } }, message('in-1', 'user', '执行任务'), reply('我去执行。'),
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+      { type: 'turn/start', data: { turn: 2 } }, message('feedback-1', 'companion-spell', '任务完成'), reply('执行好了。'),
+      { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } },
+      { type: 'turn/start', data: { turn: 3 } }, message('in-2', 'user', '下一件事'),
+      { type: 'turn/end', data: { turn: 3, reason: { kind: 'error' } } },
+    ] })
+    const executor = new DshAgentExecutor({ ...dsh, deliver: async () => ({ messageId: 'in-1' }) })
+    expect(await executor.run('private:10001', '执行任务')).toBe('我去执行。')
+    expect(executor.lastTurnIdentity('private:10001')?.messageId).toBe('in-1')
+    await executor.disposeAll()
+  })
+
   it('同一 sessionKey 复用同一 live agent,不重复创建', async () => {
     const { dsh, state } = makeMock({})
     const exec = new DshAgentExecutor(dsh as never)
@@ -66,6 +86,34 @@ describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
     // 复用,不再创建
     expect(state.createCalls).toEqual(['private:10001'])
     expect(exec.liveSessionCount).toBe(1)
+  })
+
+  it('默认思考强度写进新会话的模型选择,留空则完全不带该字段', async () => {
+    const withEffort = makeMock({})
+    const exec = new DshAgentExecutor(withEffort.dsh as never, {
+      defaultProvider: 'd1api',
+      defaultModel: 'deepseek-v4.1-flash',
+      defaultReasoningEffort: 'high',
+    })
+    await exec.run('private:20001', 'hi')
+    expect(withEffort.state.createSelections[0].current).toEqual({
+      provider: 'd1api',
+      model: 'deepseek-v4.1-flash',
+      reasoningEffort: 'high',
+    })
+
+    // 留空(settings 的默认值)必须等价于"沿用适配器行为",不能发一个字面空串。
+    const withoutEffort = makeMock({})
+    const plain = new DshAgentExecutor(withoutEffort.dsh as never, {
+      defaultProvider: 'd1api',
+      defaultModel: 'deepseek-v4.1-flash',
+      defaultReasoningEffort: '',
+    })
+    await plain.run('private:20002', 'hi')
+    expect(withoutEffort.state.createSelections[0].current).toEqual({
+      provider: 'd1api',
+      model: 'deepseek-v4.1-flash',
+    })
   })
 
   it('多轮:每轮返回该会话的回复内容', async () => {

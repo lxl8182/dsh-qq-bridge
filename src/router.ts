@@ -10,8 +10,23 @@ export interface HandlerContext {
   groupId?: MessageTargetId
   /** 已经剥离指令前缀后的有效载荷 */
   payload: string
+  /**
+   * 这条消息是否来自已校验的拥有者(不是白名单成员,不是陌生人)。
+   * 人格与个人记忆只跟随这个身份,昵称/群号/会话前缀都不作数。
+   */
+  owner: boolean
+  /** 平台消息 id;用于把一次入站与它引起的生成关联起来。 */
+  messageId?: MessageTargetId
+  replyTarget?: PlatformReplyTarget
   /** 回发到来源会话 */
   respond(text: string): Promise<void>
+  /**
+   * 回发并返回平台接收结果。
+   *
+   * `respond` 只报告“没有抛错”,调用方无法区分已送达与静默失败;需要记录平台
+   * 接收事实时用这个形态。返回 `undefined` 表示平台未提供消息 id。
+   */
+  send?(text: string): Promise<{ platformId?: string }>
 }
 
 export interface Handler {
@@ -34,6 +49,14 @@ export type OutboundSender = (
   replyTarget?: PlatformReplyTarget,
 ) => Promise<void>
 
+/** 带平台回执的出站发送;返回值里的 id 来自平台动作响应。 */
+export type OutboundSendReceipt = ((
+  scope: 'private' | 'group',
+  targetId: MessageTargetId,
+  text: string,
+  replyTarget?: PlatformReplyTarget,
+) => Promise<{ platformId?: string } | void>) | undefined
+
 /**
  * C 骨架:消息分发器。注册 handler,按前缀 + 匹配路由。
  */
@@ -44,6 +67,11 @@ export class MessageRouter {
     private readonly gate: AccessGate,
     private readonly outbound: OutboundSender,
     private readonly pendingReply?: PendingReplyHandler,
+    /**
+     * 带平台回执的发送器。缺省时 `ctx.send` 退化为 `respond` 且不带 id:
+     * 旧调用方与旧传输层不需要改动,新调用方拿不到 id 时也知道自己拿不到。
+     */
+    private readonly outboundWithReceipt?: OutboundSendReceipt,
   ) {}
 
   register(handler: Handler): () => void {
@@ -83,7 +111,30 @@ export class MessageRouter {
       scope,
       groupId: evt.group_id,
       payload,
+      owner: this.gate.isOwner(evt),
+      messageId: evt.message_id,
+      replyTarget: evt.reply_target,
       respond,
+      send: this.outboundWithReceipt
+        ? async (text: string) => {
+            try {
+              const receipt = await this.outboundWithReceipt!(scope, targetId, text, evt.reply_target)
+              return receipt && typeof receipt === 'object' ? receipt : {}
+            } catch (err) {
+              // A failed send is a fact the caller must see; it is not the
+              // same as "sent without an id".
+              console.warn(
+                `[dsh-qq-bridge] failed to send ${scope} message to ${targetId}: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              )
+              throw err
+            }
+          }
+        : async (text: string) => {
+            await respond(text)
+            return {}
+          },
     }
 
     if (await this.pendingReply?.handle(ctx)) return true

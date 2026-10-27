@@ -11,9 +11,11 @@ export type { Handler, HandlerContext } from './router.js'
 export { AccessGate } from './security.js'
 export type { AccessOptions } from './security.js'
 export { AgentRpcHandler } from './handlers/agent.js'
-export type { AgentExecutor } from './handlers/agent.js'
-export { DshAgentExecutor, extractLastAssistantText, hashKey } from './handlers/dsh-executor.js'
+export type { AgentExecutor, AgentTurnObserver, QqTurnReport } from './handlers/agent.js'
+export { DshAgentExecutor, extractLastAssistantText, extractLastUserMessage, hashKey } from './handlers/dsh-executor.js'
 export type { DshRenderedAgent } from './handlers/dsh-executor.js'
+export { QQ_BRIDGE_EVENTS_SERVICE, QqBridgeEvents } from './bridge-events.js'
+export type { QqTurnListener, QqTurnSubscription } from './bridge-events.js'
 export { DIR_COMMAND, DirectoryHandler, resolveUserPath } from './handlers/directory.js'
 export type { DirectorySwitcher } from './handlers/directory.js'
 export {
@@ -99,3 +101,5 @@ export {
 } from './plugin.js'
 // 包入口默认导出即为 Cordis 插件本体:让 Loader `unwrapExports` 能取到 default。
 export { default } from './plugin.js'
+
+export { Config, apply, inject, name } from './plugin.js'

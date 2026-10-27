@@ -44,6 +44,15 @@ const DshQqBridgeConfig = z.object({
       provider: z.string().default('deepseek-official'),
       /** 驱动 agent 的模型 id(provider 适配器解释)。 */
       model: z.string().default('deepseek-v4-flash'),
+      /**
+       * 默认思考强度(provider 适配器的 effort id,如 low/medium/high/max)。
+       *
+       * 不同 provider 对"不传"的处理不一样:官方 deepseek 适配器自带默认值,而
+       * 裸的 openai-completions provider 不传就完全不思考——同一个模型在 QQ 里
+       * 会看起来"变笨了"。这里给一个显式默认,新会话与重启后都保持同一强度。
+       * 留空则沿用适配器自己的行为,QQ 会话里仍可用 /reasoningEff 临时切换。
+       */
+      reasoningEffort: z.string().optional(),
       /** 当 DSH llm 服务不可用时,bridge 侧 /models 的降级候选列表。 */
       models: z.array(z.string()).default([]),
       /** QQ Agent 默认工作目录;支持 ~ 表示当前用户 home。 */
@@ -60,7 +69,12 @@ const DshQqBridgeConfig = z.object({
       timeoutMs: z.number().int().positive().optional(),
       /** Agent 长时间无响应时回发的消息;仅设置 timeoutMs 后使用。 */
       timeoutMessage: z.string().default('agent 无响应，请稍后重试。'),
-      /** 仅 QQ 入站消息使用的回复风格 skill,不会影响其它 DSH 会话。 */
+      /**
+       * 旧版「QQ 回复风格 skill」配置。
+       *
+       * 仅为配置兼容保留:桥接层不再拼装来源说明/风格标记,也不再自动调用 skill,
+       * QQ 入站消息原文会逐字交给 Agent。该项当前的取值不影响发出的 payload。
+       */
       qqReplyStyleSkill: z
         .object({
           enabled: z.boolean().default(true),

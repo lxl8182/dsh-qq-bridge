@@ -33,3 +33,27 @@
             enabled: true
         selfLogInput:
           enabled: false
+
+    - id: preset-dsh-qq-bridge
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: dsh-qq-bridge
+        name: QQ 对话
+        description: QQ 私聊中的 DSH 会话，工具操作受原生权限约束。
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: 你在 QQ 中与用户自然交流。日常聊天简洁自然；需要实际操作时遵守工作区、工具与权限规则。
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'

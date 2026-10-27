@@ -1,6 +1,6 @@
 {
   "name": "@yachangchang/dsh-qq-bridge",
-  "version": "1.0.6",
+  "version": "1.0.6-neko.3",
   "description": "A pluggable DSH host plugin that connects QQ (NapCat/OneBot) and forwards messages to DSH agents / local capabilities.",
   "license": "MIT",
   "type": "module",
@@ -28,6 +28,7 @@
     "agent-presets",
     "cordis.patch.yml",
     "scripts/postbuild.js",
+    "scripts/pair-official.mjs",
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
@@ -35,6 +36,7 @@
     "build:client": "node scripts/build-client.js",
     "postbuild": "node scripts/postbuild.js",
     "start": "node dist/main.js echo",
+    "pair:official": "node scripts/pair-official.mjs",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -54,7 +56,6 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-connection",
-        "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-api-remotes"
       ],
@@ -64,17 +65,15 @@
   "dependencies": {
     "@inquirer/prompts": "^8.5.2",
     "@tencent-connect/qqbot-nodejs": "^1.0.4",
-    "schemastery": "^3.18.0",
+    "@deepseek-ai/schemastery": "3.18.5",
     "ws": "^8.17.0",
     "zod": "^3.23.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-api-remotes": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-client-connection": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.8",
-    "@deepseek-ai/dsh-settings": "^0.1.0-rc.8",
+    "@deepseek-ai/dsh-api-remotes": ">=0.2.1-rc.1 <0.2.2",
+    "@deepseek-ai/dsh-client-connection": ">=0.2.1-rc.1 <0.2.2",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.2.1-rc.1 <0.2.2",
+    "@deepseek-ai/dsh-settings": ">=0.2.1-rc.1 <0.2.2",
     "react": "^18.2.0"
   },
   "devDependencies": {

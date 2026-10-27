@@ -31,6 +31,18 @@ export class AccessGate {
   }
 
   /**
+   * 这条消息是否来自已校验的拥有者。
+   *
+   * 与 `allow` 分开:open 模式、白名单成员和拥有者过去都“能触发”,但只有拥有者
+   * 才代表同一个人格与同一份个人记忆。昵称、群号或 `qq-` 前缀都不能替代这个判断,
+   * 唯一依据是 bridge 配置里的 admin 身份。
+   */
+  isOwner(evt: Pick<OnebotMessageEvent, 'user_id'>): boolean {
+    const adminId = this.opts.adminId ?? this.opts.adminQq
+    return adminId !== undefined && adminId !== 0 && evt.user_id === adminId
+  }
+
+  /**
    * 剥离指令前缀,返回剩余有效载荷;若不以前缀开头返回 null。
    * commandPrefix 为空时返回整条消息,由白名单决定是否放行。
    */

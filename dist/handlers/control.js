@@ -1,6 +1,70 @@
 import { stat } from 'node:fs/promises';
 import { resolveUserPath } from './directory.js';
 export const QQ_CONTROL_BLOCK_TAG = 'dsh-qq-bridge-control';
+/**
+ * 「魔法」咒语标签。
+ *
+ * 主会话不上报任何工具（见 dsh-companion-memory 的 main-session.js 实测说明）：
+ * 只要请求里存在 tools 字段，模型的 thinking 就会被拉进 function-calling 规划
+ * 模式，角色独白变成第三人称分析。动作因此改由正文标签表达——纯文本，不触发
+ * 函数调用语境。执行与回填归 companion-memory 插件；这里只剥离 QQ 可见文字。
+ */
+export const QQ_SPELL_TAGS = ['读取', '生成', '执行', '翻本子', '改写', '撕掉', '学咒语', '忘掉咒语'];
+/**
+ * 从回复里拆出可见正文与咒语。
+ *
+ * 未闭合的标签不当作咒语执行：那多半是模型写了一半就停了，如实留在正文里让
+ * 用户看见"它想做什么但没说完"，而不是猜一个意思去跑。
+ */
+export function parseQqSpells(text) {
+    const source = String(text ?? '');
+    const spells = [];
+    if (!source)
+        return { visibleText: '', spells };
+    // 学来的咒语也使用 2–8 个中文字符的名字；剥离不依赖执行插件的模板台账。
+    const pattern = /<([\p{Script=Han}]{2,8})>([\s\S]*?)<\/\1>/gu;
+    let last = 0;
+    let visible = '';
+    let match;
+    while ((match = pattern.exec(source)) !== null) {
+        visible += source.slice(last, match.index);
+        const body = match[2].trim();
+        if (body)
+            spells.push({ spell: match[1], body });
+        last = match.index + match[0].length;
+    }
+    visible += source.slice(last);
+    return { visibleText: visible.replace(/\n{3,}/g, '\n\n').trim(), spells };
+}
+/** 一条咒语执行结束后回填给模型的「终端反馈」。 */
+export function renderQqSpellFeedback(spell, ok, text) {
+    const body = String(text ?? '').trim();
+    if (!ok)
+        return `【终端反馈·${spell.spell}】失败：${body || '未知原因'}`;
+    return body ? `【终端反馈·${spell.spell}】\n${body}` : `【终端反馈·${spell.spell}】\n（没有输出）`;
+}
+/** 与 QQ 控制块同一套分发形态：注册者决定某个咒语真的怎么执行。 */
+export class QqSpellDispatcher {
+    handlers = new Map();
+    register(handler) {
+        this.handlers.set(handler.spell, handler);
+        return () => this.handlers.delete(handler.spell);
+    }
+    get size() {
+        return this.handlers.size;
+    }
+    async run(spell, ctx) {
+        const handler = this.handlers.get(spell.spell);
+        if (!handler)
+            return { ok: false, text: '这个咒语现在还没有接上。' };
+        try {
+            return { ok: true, text: await handler.run(spell.body, ctx) };
+        }
+        catch (err) {
+            return { ok: false, text: err instanceof Error ? err.message : String(err) };
+        }
+    }
+}
 export class QqControlDispatcher {
     handlers = new Map();
     register(handler) {

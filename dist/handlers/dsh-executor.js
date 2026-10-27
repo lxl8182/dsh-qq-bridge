@@ -27,6 +27,20 @@ export function extractLastAssistantText(events) {
     }
     return null;
 }
+/** Read one committed turn without mixing in later followups. */
+export function eventsForTurn(events, turn) {
+    const start = events.findIndex(event => {
+        const row = event;
+        return row.type === 'turn/start' && row.data?.turn === turn;
+    });
+    if (start < 0)
+        return [];
+    const end = events.findIndex((event, index) => {
+        const row = event;
+        return index > start && row.type === 'turn/end' && row.data?.turn === turn;
+    });
+    return events.slice(start, end < 0 ? undefined : end + 1);
+}
 /**
  * DSH 工具调用没有被运行时识别时,模型可能把 DSML 协议文本当普通 text 输出。
  * 这类内容不是有效回复,也不应透传给 QQ 用户。
@@ -35,6 +49,41 @@ export function isUnexecutedDsmlToolCall(text) {
     return text.includes('<｜｜DSML｜｜tool_calls>')
         || text.includes('<||DSML||tool_calls>')
         || /<tool_calls>\s*(?:<tool_calls>\s*)?<invoke\s+name=/i.test(text);
+}
+/**
+ * 提取 session surface 中最后一条 user 消息的 id 与文本。
+ *
+ * 这是「这次输入」在 DSH 侧的稳定标识:每条用户消息的 id 由宿主生成且唯一,
+ * 因此外部可以据此把一次删除/发送与具体的 DSH 轮次对上,而不必猜轮次序号。
+ *
+ * 兼容两种事件形状(与 `extractLastAssistantText` 同一套):
+ * `{ type, data: { message } }` 与简易的 `{ type, content }`。
+ */
+export function extractLastUserMessage(events) {
+    for (let i = events.length - 1; i >= 0; i--) {
+        const evt = events[i];
+        if (!evt || evt.type !== 'user/message')
+            continue;
+        // Memory or runtime-context injections are user-role but not the speaker's
+        // own words; only `source.kind === 'user'` counts.
+        if ((evt.data?.source ?? evt.data?.message?.source)?.kind !== 'user')
+            continue;
+        const message = evt.data?.message ?? evt.data;
+        const blocks = message?.content ?? evt.content;
+        if (!Array.isArray(blocks))
+            continue;
+        const text = blocks
+            .filter((b) => {
+            const blk = b;
+            return !!blk && blk.type === 'text' && typeof blk.text === 'string';
+        })
+            .map((b) => b.text)
+            .join('\n');
+        const id = typeof message?.id === 'string' ? message.id : '';
+        if (id || text)
+            return { id, text };
+    }
+    return null;
 }
 /**
  * A 内置 handler 的 DSH 实现 —— 多轮上下文版本。
@@ -54,6 +103,8 @@ export class DshAgentExecutor {
     sessionSelections = new Map();
     selectionRefs = new Map();
     queues = new Map();
+    /** 每个 sessionKey 最近一轮在 DSH 侧的会话与用户消息 id。 */
+    turnIdentities = new Map();
     /**
      * 本 executor 实例(即一次插件挂载/一次 host boot)唯一的后缀。
      * 避免跨 host 重启复用固定 sessionId 时,与磁盘上残留的旧会话发生 id collision。
@@ -67,10 +118,57 @@ export class DshAgentExecutor {
     async run(sessionKey, payload, onChunk) {
         return await this.enqueue(sessionKey, () => this.runNow(sessionKey, payload, onChunk));
     }
+    async prepareSession(sessionKey) {
+        return (await this.getOrCreateSessionAgent(sessionKey)).sessionId;
+    }
+    async retireSessionId(sessionId) {
+        for (const [key, id] of this.sessions) {
+            if (id === sessionId) {
+                await this.startNewSession(key);
+                return;
+            }
+        }
+    }
+    /**
+     * 最近完成的一轮在 DSH 侧的会话与用户消息 id。
+     *
+     * 只读:两个 id 都由宿主生成,桥接层只是把它们报告给订阅方。没有发生过一轮
+     * 时返回 undefined,而不是编造一个。
+     */
+    lastTurnIdentity(sessionKey) {
+        const record = this.turnIdentities.get(sessionKey);
+        if (!record)
+            return undefined;
+        return { sessionId: record.sessionId, messageId: record.messageId };
+    }
     async runNow(sessionKey, payload, onChunk) {
         const { agent, sessionId } = await this.getOrCreateSessionAgent(sessionKey);
-        await this.dsh.deliver(agent, payload, onChunk);
-        const events = await this.readEvents(agent, sessionId);
+        this.turnIdentities.delete(sessionKey);
+        const delivered = await this.dsh.deliver(agent, payload, onChunk);
+        const surface = await this.readEvents(agent, sessionId);
+        let events = surface;
+        if (delivered) {
+            const inputIndex = surface.findIndex(event => {
+                const row = event;
+                return row.type === 'user/message' && (row.data?.message ?? row.data)?.id === delivered.messageId;
+            });
+            const start = [...surface.slice(0, inputIndex)].reverse().find(event => event.type === 'turn/start');
+            if (inputIndex < 0 || start?.data?.turn === undefined)
+                throw new Error('DSH input turn was not committed');
+            events = eventsForTurn(surface, start.data.turn);
+            this.turnIdentities.set(sessionKey, { sessionId, messageId: delivered.messageId });
+        }
+        const lastEnd = [...events].reverse().find(event => event?.type === 'turn/end');
+        const reason = lastEnd?.data?.reason;
+        if (reason?.kind === 'blocked' || reason?.kind === 'error' || reason?.kind === 'aborted') {
+            throw new Error(reason.error?.message ?? `DSH turn ${reason.kind}`);
+        }
+        // Record the identity of the input this turn actually consumed, before the
+        // reply is extracted: a later lookup must not pair a reply with the next
+        // turn's input.
+        const user = extractLastUserMessage(events);
+        if (user?.id)
+            this.turnIdentities.set(sessionKey, { sessionId, messageId: user.id });
         const text = extractLastAssistantText(events);
         if (text !== null && isUnexecutedDsmlToolCall(text)) {
             return [
@@ -122,6 +220,9 @@ export class DshAgentExecutor {
         }
         this.sessions.delete(sessionKey);
         this.queues.delete(sessionKey);
+        // The identity belonged to the session that is gone; a new session must not
+        // inherit it.
+        this.turnIdentities.delete(sessionKey);
     }
     async startNewSession(sessionKey) {
         this.sessionVersions.set(sessionKey, this.getSessionVersion(sessionKey) + 1);
@@ -181,7 +282,17 @@ export class DshAgentExecutor {
         this.sessionSelections.clear();
         this.selectionRefs.clear();
         this.queues.clear();
+        this.turnIdentities.clear();
         await Promise.all(agents.map((a) => a.dispose()));
+    }
+    /**
+     * 当前 QQ 会话对应的 DSH session id,尚未建会话时为 undefined。
+     *
+     * 只读:把「同一 QQ 来源」和「同一 DSH 会话」关联起来,供外部按会话记录或退役;
+     * 它不创建会话也不改变映射。
+     */
+    currentSessionId(sessionKey) {
+        return this.sessions.get(sessionKey);
     }
     get liveSessionCount() {
         return this.agents.size;
@@ -236,6 +347,11 @@ export class DshAgentExecutor {
         return {
             provider: this.opts.defaultProvider ?? 'deepseek-official',
             model: this.opts.defaultModel ?? 'deepseek-v4-flash',
+            // 显式默认思考强度:不传时,部分 provider(裸 openai-completions)会完全不
+            // 思考,表现为"同一个模型在 QQ 里变笨"。配置留空则保持适配器自身行为。
+            ...(this.opts.defaultReasoningEffort
+                ? { reasoningEffort: this.opts.defaultReasoningEffort }
+                : {}),
         };
     }
 }

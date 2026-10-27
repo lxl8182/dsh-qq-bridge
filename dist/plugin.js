@@ -1,45 +1,55 @@
 import { OnebotClient, WsTransport } from './onebot/client.js';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import { MessageRouter } from './router.js';
 import { AccessGate } from './security.js';
 import { AgentRpcHandler } from './handlers/agent.js';
-import { DshAgentExecutor } from './handlers/dsh-executor.js';
+import { DshAgentExecutor, eventsForTurn, extractLastAssistantText, isUnexecutedDsmlToolCall } from './handlers/dsh-executor.js';
 import { DIR_COMMAND, resolveUserPath } from './handlers/directory.js';
 import { createSetCwdControlHandler, createNewSessionControlHandler, createSetModelControlHandler, createSetPermissionControlHandler, createSetReasoningEffortControlHandler, QqControlDispatcher, } from './handlers/control.js';
 import { createSaveMemoControlHandler, LazyCustomMemoryStore } from './handlers/custom-memory.js';
 import { createScheduleTaskControlHandler, InMemoryTaskScheduler } from './handlers/scheduler.js';
 import { BridgeControlHandler, installBridgeModelSelection, HELP_COMMAND, MODEL_COMMAND, MODELS_COMMAND, NEW_SESSION_COMMAND, PERMISSION_COMMAND, PERMISSIONS_COMMAND, REASONING_EFFORT_COMMAND, } from './handlers/model-control.js';
 import { ShellHandler } from './handlers/shell.js';
-import { DshQqBridgeConfig } from './config.js';
 import { NapcatSelfLogInput } from './inputs/napcat-log.js';
 import { homedir } from 'node:os';
 import { TencentOfficialBotClient } from './official/client.js';
 import { QqInteractionBridge } from './interactions.js';
 import { DshWebActivityGate } from './web-activity.js';
-import { installQqBridgeSettings } from './settings.js';
+import { installQqBridgeSettings, readBridgeConfig, QqBridgeHostConfig } from './settings.js';
 import { isNapcatSelfKeepAliveMessage } from './onebot/self-keepalive.js';
 import { NapcatRecovery } from './napcat-recovery.js';
 import { probeNapcatLogin } from './napcat-tags.js';
+import { QQ_BRIDGE_EVENTS_SERVICE, QqBridgeEvents } from './bridge-events.js';
 /**
  * Cordis 插件入口(Host 侧)。
  * M3:每个 QQ 会话持有常驻 DSH live agent,实现多轮上下文。
  * 依赖:agentLoop / agentPresets / sessionQuery。
  */
+export const Config = QqBridgeHostConfig;
 export const name = 'dsh-qq-bridge';
 export const inject = ['agentLoop', 'agentPresets', 'sessionQuery'];
 export async function apply(ctx, options) {
     console.info('请到Web UI的设置中配置<QQ bridge>');
-    const entry = DshQqBridgeConfig.parse(options);
-    const runtime = createBridgeRuntime(ctx);
-    const settings = await installQqBridgeSettings(ctx, entry, (next) => runtime.reconcile(next));
+    const entry = readBridgeConfig(options);
+    // One service for the whole plugin, published before the runtime so an
+    // observer that subscribes during the same boot cannot miss the first turn.
+    const events = new QqBridgeEvents();
+    const disposeEvents = ctx
+        .provide?.(QQ_BRIDGE_EVENTS_SERVICE, events);
+    const runtime = createBridgeRuntime(ctx, events);
+    const settings = await installQqBridgeSettings(ctx, options, (next) => runtime.reconcile(next));
     if (settings === undefined)
         await runtime.reconcile(entry);
     return async () => {
         settings?.dispose();
         await runtime.dispose();
+        events.dispose();
+        if (typeof disposeEvents === 'function')
+            disposeEvents();
     };
 }
-function createBridgeRuntime(ctx) {
+function createBridgeRuntime(ctx, events) {
     let stop;
     let activeKey = '';
     let revision = 0;
@@ -65,7 +75,7 @@ function createBridgeRuntime(ctx) {
                 await previous();
             }
             try {
-                const nextStop = await startQqBridge(ctx, cfg);
+                const nextStop = await startQqBridge(ctx, cfg, events);
                 if (nextRevision !== revision) {
                     await nextStop();
                     return;
@@ -89,9 +99,11 @@ function createBridgeRuntime(ctx) {
         },
     };
 }
-async function startQqBridge(ctx, cfg) {
+async function startQqBridge(ctx, cfg, events) {
     assertPlatformConfig(cfg);
     const officialMode = cfg.platform === 'official';
+    if (events)
+        events.platform = cfg.platform;
     const adminTarget = officialMode ? cfg.official.adminOpenId : cfg.access.adminQq;
     const gate = new AccessGate({
         adminQq: cfg.access.adminQq,
@@ -111,10 +123,20 @@ async function startQqBridge(ctx, cfg) {
         else
             await client.sendGroup(targetId, text, replyTarget);
     };
+    // The receipt variant returns whatever platform message id the transport
+    // reports; a transport that reports none is not an error, it just leaves the
+    // accepted part without an id.
+    const outboundWithReceipt = async (scope, targetId, text, replyTarget) => {
+        const result = scope === 'private'
+            ? await client.sendPrivate(targetId, text, replyTarget)
+            : await client.sendGroup(targetId, text, replyTarget);
+        const platformId = readPlatformMessageId(result);
+        return platformId === undefined ? {} : { platformId };
+    };
     const interactions = new QqInteractionBridge(outbound, cfg.access.commandPrefix);
     const unregisterInteractions = interactions.register(ctx);
     const webActivity = DshWebActivityGate.register(ctx);
-    const router = new MessageRouter(gate, outbound, interactions);
+    const router = new MessageRouter(gate, outbound, interactions, outboundWithReceipt);
     const workspaceAttachment = createWorkspaceAttachment(ctx);
     const llmAccess = createDshLlmAccess(ctx);
     const commandsAccess = createDshCommandsAccess(ctx);
@@ -143,16 +165,39 @@ async function startQqBridge(ctx, cfg) {
     if (cfg.shell.enabled) {
         unregisterShell = router.register(new ShellHandler(async (cmd) => ({ stdout: `(shell exec disabled) ${cmd}`, code: 1 })));
     }
-    const unregisterAgent = router.register(new AgentRpcHandler(executor, {
+    const accountKey = createHash('sha256').update(JSON.stringify([cfg.platform, adminTarget,
+        officialMode ? cfg.official.appId : cfg.napcat.wsUrl])).digest('hex').slice(0, 24);
+    const profile = ctx.get ? ctx.get('profileContext') : ctx.profileContext;
+    const agentHandler = new AgentRpcHandler(executor, {
+        deliveryStatePath: join(profile?.home ?? join(homedir(), '.dsh'), 'plugins', 'dsh-qq-bridge', accountKey, 'delivery.json'),
+        restoreContext: input => {
+            const evt = { post_type: 'message', message_type: input.scope, user_id: input.userId,
+                group_id: input.groupId, raw_message: input.payload, message_id: input.messageId };
+            if (!gate.allow(evt))
+                return undefined;
+            const target = input.scope === 'private' ? input.userId : input.groupId;
+            return { ...input, owner: gate.isOwner(evt),
+                respond: text => outbound(input.scope, target, text, input.replyTarget),
+                send: text => outboundWithReceipt(input.scope, target, text, input.replyTarget) };
+        },
+        prepareTurn: input => events?.prepare(input) ?? Promise.resolve(),
         streamText: cfg.agent.streamText,
         streamReasoning: cfg.agent.streamReasoning,
         maxMessageLength: cfg.agent.maxMessageLength,
         ackMessage: cfg.agent.ackMessage,
         timeoutMs: cfg.agent.timeoutMs,
         timeoutMessage: cfg.agent.timeoutMessage,
+        // 旧配置项透传只为兼容;AgentRpcHandler 不再用它拼 prompt 或调 skill。
         qqReplyStyleSkill: cfg.agent.qqReplyStyleSkill,
         webActivityGate: webActivity.gate,
-        sessionVersion: (sessionKey) => executor.getSessionVersion(sessionKey),
+        sessionIdOf: (sessionKey) => executor.currentSessionId(sessionKey),
+        ...(events ? { observeTurn: (report) => events.publish({
+                ...report,
+                // The executor knows the session id only after it has one; report what is
+                // true at publication time rather than the id it will have later.
+                ...(report.sessionId === undefined && executor.currentSessionId(report.sessionKey) !== undefined
+                    ? { sessionId: executor.currentSessionId(report.sessionKey) } : {}),
+            }) } : {}),
         reservedCommands: [
             DIR_COMMAND,
             HELP_COMMAND,
@@ -164,7 +209,24 @@ async function startQqBridge(ctx, cfg) {
             PERMISSIONS_COMMAND,
         ],
         controlDispatcher,
-    }));
+    });
+    await agentHandler.open();
+    const disposeSessionOutput = registerQqSessionOutput(ctx, executor, events, agentHandler);
+    const disposeRetirer = events?.setRetirer(async (sessionId) => {
+        await agentHandler.retireSession(sessionId);
+        await executor.retireSessionId(sessionId);
+    });
+    const disposeReplay = events?.setReplay(() => agentHandler.completedReports());
+    // 主动推送通道:其他插件(例如记忆插件)有"没人可回填"的结果时,直接发到
+    // 管理员私聊。发给谁、怎么发由桥接决定,调用方只给文字。
+    const disposePusher = events?.setPusher
+        ? events.setPusher(async (text) => { await client.sendPrivate(adminTarget, text); })
+        : undefined;
+    const unregisterAgent = router.register(agentHandler);
+    const retryTimer = setInterval(() => {
+        void agentHandler.retryPending().catch(err => console.warn(`[dsh-qq-bridge] delivery recovery failed: ${err instanceof Error ? err.message : String(err)}`));
+    }, 15000);
+    retryTimer.unref();
     // 连接健康检查失败不应拖垮整个 DSH Host 的插件挂载。
     // NapCat 模式保持静默并在后台自动重连；官方模式仍输出连接引导。
     // 依旧保持插件挂载(WS 端点在时才真正收发),避免瞬时断连导致整棵 tree 回滚。
@@ -211,6 +273,12 @@ async function startQqBridge(ctx, cfg) {
         });
     }
     return async () => {
+        clearInterval(retryTimer);
+        disposeSessionOutput();
+        disposeRetirer?.();
+        disposeReplay?.();
+        disposePusher?.();
+        await agentHandler.dispose();
         unregisterAgent();
         unregisterBridgeControl();
         unregisterShell();
@@ -230,10 +298,35 @@ async function startQqBridge(ctx, cfg) {
         await client.disconnect();
     };
 }
-export default { name, inject, apply };
+export default { name, inject, Config, apply };
 /** 判断是否启用 agent 完成后的管理员主动提醒。 */
 export function agentReplyNotificationsEnabled(cfg) {
     return cfg.notifications.agentReply.enabled ?? cfg.platform !== 'official';
+}
+/**
+ * 从一个平台动作响应里取出消息 id。
+ *
+ * 官方 SDK 返回对象里 id 的键名随版本变化(c2c/group 都可能带 `id`、
+ * `messageId` 或 `msgId`),NapCat 用 OneBot 的 `data.message_id`。这里只做只读
+ * 提取:取不到就是取不到,不合成假 id。
+ */
+export function readPlatformMessageId(result) {
+    if (typeof result === 'string')
+        return result.trim() || undefined;
+    if (typeof result !== 'object' || result === null)
+        return undefined;
+    const record = result;
+    const data = typeof record.data === 'object' && record.data !== null
+        ? record.data
+        : undefined;
+    for (const candidate of [record.messageId, record.msgId, record.id,
+        data?.message_id, data?.messageId, data?.msgId, data?.id]) {
+        if (typeof candidate === 'string' && candidate.trim())
+            return candidate.trim();
+        if (typeof candidate === 'number' && Number.isFinite(candidate))
+            return String(candidate);
+    }
+    return undefined;
 }
 function makeDshExecutor(ctx, agentCfg, interactions, attachWorkspace, llm, commands) {
     const handles = wireDsh(ctx, agentCfg, interactions, attachWorkspace);
@@ -241,6 +334,7 @@ function makeDshExecutor(ctx, agentCfg, interactions, attachWorkspace, llm, comm
         defaultCwd: agentCfg?.cwd ? resolveUserPath(agentCfg.cwd) : undefined,
         defaultProvider: agentCfg?.provider,
         defaultModel: agentCfg?.model,
+        defaultReasoningEffort: agentCfg?.reasoningEffort,
         models: agentCfg?.models,
         resolveModelSelection: createModelSelectionResolver(llm),
         listModels: createModelLister(llm),
@@ -405,6 +499,7 @@ function wireDsh(ctx, agentCfg, interactions, attachWorkspace) {
             flushReasoning();
             flushText(); // 收尾冲刷剩余内容
             unsubscribe?.();
+            return { messageId: msg.id };
         },
         async readSurface(sessionId) {
             if (!query)
@@ -653,6 +748,34 @@ function isBridgeConfigured(cfg) {
     }
     return cfg.access.adminQq > 0;
 }
+/** Forward completed followups only for sessions bound by an admitted QQ input. */
+export function registerQqSessionOutput(ctx, executor, bridge, handler) {
+    if (!ctx.on || !bridge)
+        return () => { };
+    return ctx.on('session/event', (session, event) => {
+        if (!isCompletedTurnEnd(event) || session.header?.origin === 'subagent')
+            return;
+        const sessionId = session.id;
+        if (!sessionId)
+            return;
+        const binding = bridge.binding(sessionId);
+        if (!binding || executor.currentSessionId(binding.sessionKey) !== sessionId)
+            return;
+        const turn = eventsForTurn(session.events ?? [], event.data.turn);
+        // Ordinary QQ inputs already have their own HandlerContext and send path.
+        if (turn.some(row => {
+            const input = row;
+            return input.type === 'user/message' && (input.data?.message ?? input.data)?.source?.kind === 'user';
+        }))
+            return;
+        const text = extractLastAssistantText(turn);
+        if (!text || isUnexecutedDsmlToolCall(text))
+            return;
+        void handler.sendSessionOutput(binding, event.data.turn, text).catch(error => {
+            console.warn(`[dsh-qq-bridge] session output delivery failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+    });
+}
 export function createAgentReplyNotifier(ctx, client, adminTarget) {
     if (!ctx.on || adminTarget === '' || adminTarget === 0)
         return () => { };
@@ -663,7 +786,7 @@ export function createAgentReplyNotifier(ctx, client, adminTarget) {
         if (session.header?.origin === 'subagent')
             return;
         const sessionId = String(session.id ?? '');
-        if (isQqAgentSessionId(sessionId))
+        if (isQqAgentSessionId(sessionId) || sessionId.startsWith('companion-spell-'))
             return;
         const key = `${sessionId}:${event.data.turn}`;
         if (sent.has(key))

@@ -71,6 +71,9 @@ describe('dsh-qq-bridge — agent reply notifier', () => {
       events: [{ type: 'session/title', data: { title: 'QQ 会话' } }],
     }
     listener?.(session, { type: 'turn/end', data: { turn: 3, reason: { kind: 'completed' } } })
+    listener?.({ id: 'companion-spell-test', events: [] }, {
+      type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } },
+    })
 
     expect(client.sendPrivate).not.toHaveBeenCalled()
     dispose()

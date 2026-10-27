@@ -6,7 +6,8 @@ export { TencentOfficialBotClient, toBridgeMessageEvent } from './official/clien
 export { MessageRouter } from './router.js';
 export { AccessGate } from './security.js';
 export { AgentRpcHandler } from './handlers/agent.js';
-export { DshAgentExecutor, extractLastAssistantText, hashKey } from './handlers/dsh-executor.js';
+export { DshAgentExecutor, extractLastAssistantText, extractLastUserMessage, hashKey } from './handlers/dsh-executor.js';
+export { QQ_BRIDGE_EVENTS_SERVICE, QqBridgeEvents } from './bridge-events.js';
 export { DIR_COMMAND, DirectoryHandler, resolveUserPath } from './handlers/directory.js';
 export { BridgeControlHandler, HELP_COMMAND, MODEL_COMMAND, MODELS_COMMAND, ModelControlHandler, NEW_SESSION_COMMAND, PERMISSION_COMMAND, PERMISSIONS_COMMAND, REASONING_EFFORT_COMMAND, installBridgeModelSelection, resolveConfiguredModels, } from './handlers/model-control.js';
 export { QQ_CONTROL_BLOCK_TAG, QqControlDispatcher, createNewSessionControlHandler, createSetCwdControlHandler, createSetModelControlHandler, createSetPermissionControlHandler, createSetReasoningEffortControlHandler, parseQqControlBlocks, } from './handlers/control.js';
@@ -20,3 +21,4 @@ export { buildConnectGuidance } from './plugin.js';
 export { agentReplyNotificationsEnabled, buildOfficialConnectGuidance, createAgentReplyNotifier, findSessionTitle, registerAgentReplyNotifier, } from './plugin.js';
 // 包入口默认导出即为 Cordis 插件本体:让 Loader `unwrapExports` 能取到 default。
 export { default } from './plugin.js';
+export { Config, apply, inject, name } from './plugin.js';
