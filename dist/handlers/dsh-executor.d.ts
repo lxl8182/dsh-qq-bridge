@@ -1,4 +1,5 @@
 import { AgentExecutor } from './agent.js';
+import type { InboundImage } from '../onebot/images.js';
 import { BridgeModelInfo, BridgeModelSelection, BridgeModelSelectionRef, PermissionController, SessionLifecycleController } from './model-control.js';
 /**
  * 提取 session surface 中最后一条 assistant 消息的纯文本。
@@ -66,7 +67,9 @@ export interface DshServiceHandles {
      * 投递用户消息并等待本轮完成。
      * @param onChunk 可选分段回调:agent 产出过程中的文本增量,便于流式回发。
      */
-    deliver(agent: DshRenderedAgent, prompt: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void): Promise<{
+    deliver(agent: DshRenderedAgent, prompt: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void, 
+    /** 本轮随消息下载好的图片;实现方负责把它们变成 DSH 的 ImageBlock。 */
+    images?: readonly InboundImage[]): Promise<{
         messageId: string;
     } | void>;
     /** 读取会话 surface(events)以提取本轮回复。 */
@@ -108,7 +111,7 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
         listModels?: (provider: string) => Promise<BridgeModelInfo[]>;
         executeCommand?: DshCommandExecutor;
     });
-    run(sessionKey: string, payload: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void): Promise<string>;
+    run(sessionKey: string, payload: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void, images?: readonly InboundImage[]): Promise<string>;
     prepareSession(sessionKey: string): Promise<string>;
     retireSessionId(sessionId: string): Promise<void>;
     /**

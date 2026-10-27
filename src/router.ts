@@ -1,5 +1,6 @@
 import { MessageTargetId, OnebotMessageEvent, PlatformReplyTarget } from './onebot/types.js'
 import { AccessGate } from './security.js'
+import { imageSourcesFromOnebotSegments, type ImageSource } from './onebot/images.js'
 
 /**
  * handler 上下文:暴露来源信息与便捷回发能力。
@@ -18,6 +19,14 @@ export interface HandlerContext {
   /** 平台消息 id;用于把一次入站与它引起的生成关联起来。 */
   messageId?: MessageTargetId
   replyTarget?: PlatformReplyTarget
+  /**
+   * 本条消息里图片的地址,按出现顺序。
+   *
+   * 这里只有地址,没有字节:命令类 handler 不该为了响应一条 "/help" 去下载图片。
+   * 需要图片的处理器(Agent 轮次)自己调用 `collectInboundImages` 下载,失败只损失
+   * 图片,不影响文本处理。
+   */
+  images?: readonly ImageSource[]
   /** 回发到来源会话 */
   respond(text: string): Promise<void>
   /**
@@ -106,6 +115,8 @@ export class MessageRouter {
       }
     }
 
+    // 图片只登记地址,不在这里下载:命令 handler 与白名单失败都不该触发网络请求。
+    const imageSources = imageSourcesFromOnebotSegments(evt.message)
     const ctx: HandlerContext = {
       userId: evt.user_id,
       scope,
@@ -114,6 +125,7 @@ export class MessageRouter {
       owner: this.gate.isOwner(evt),
       messageId: evt.message_id,
       replyTarget: evt.reply_target,
+      ...(imageSources.length === 0 ? {} : { images: imageSources }),
       respond,
       send: this.outboundWithReceipt
         ? async (text: string) => {

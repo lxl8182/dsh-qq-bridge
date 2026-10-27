@@ -1,3 +1,4 @@
+import { imageSourcesFromOnebotSegments } from './onebot/images.js';
 /**
  * C 骨架:消息分发器。注册 handler,按前缀 + 匹配路由。
  */
@@ -45,6 +46,8 @@ export class MessageRouter {
                 console.warn(`[dsh-qq-bridge] failed to send ${scope} message to ${targetId}: ${err instanceof Error ? err.message : String(err)}`);
             }
         };
+        // 图片只登记地址,不在这里下载:命令 handler 与白名单失败都不该触发网络请求。
+        const imageSources = imageSourcesFromOnebotSegments(evt.message);
         const ctx = {
             userId: evt.user_id,
             scope,
@@ -53,6 +56,7 @@ export class MessageRouter {
             owner: this.gate.isOwner(evt),
             messageId: evt.message_id,
             replyTarget: evt.reply_target,
+            ...(imageSources.length === 0 ? {} : { images: imageSources }),
             respond,
             send: this.outboundWithReceipt
                 ? async (text) => {

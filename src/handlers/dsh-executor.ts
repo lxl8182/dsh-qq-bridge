@@ -1,4 +1,5 @@
 import { AgentExecutor } from './agent.js'
+import type { InboundImage } from '../onebot/images.js'
 import {
   BridgeModelInfo,
   BridgeModelSelection,
@@ -145,6 +146,8 @@ export interface DshServiceHandles {
     agent: DshRenderedAgent,
     prompt: string,
     onChunk?: (text: string, kind: 'text' | 'reasoning') => void,
+    /** 本轮随消息下载好的图片;实现方负责把它们变成 DSH 的 ImageBlock。 */
+    images?: readonly InboundImage[],
   ): Promise<{ messageId: string } | void>
   /** 读取会话 surface(events)以提取本轮回复。 */
   readSurface(sessionId: string): Promise<readonly unknown[]>
@@ -193,8 +196,9 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
     sessionKey: string,
     payload: string,
     onChunk?: (text: string, kind: 'text' | 'reasoning') => void,
+    images?: readonly InboundImage[],
   ): Promise<string> {
-    return await this.enqueue(sessionKey, () => this.runNow(sessionKey, payload, onChunk))
+    return await this.enqueue(sessionKey, () => this.runNow(sessionKey, payload, onChunk, images))
   }
 
   async prepareSession(sessionKey: string): Promise<string> {
@@ -223,11 +227,12 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
     sessionKey: string,
     payload: string,
     onChunk?: (text: string, kind: 'text' | 'reasoning') => void,
+    images?: readonly InboundImage[],
   ): Promise<string> {
     const { agent, sessionId } = await this.getOrCreateSessionAgent(sessionKey)
 
     this.turnIdentities.delete(sessionKey)
-    const delivered = await this.dsh.deliver(agent, payload, onChunk)
+    const delivered = await this.dsh.deliver(agent, payload, onChunk, images)
     const surface = await this.readEvents(agent, sessionId)
     let events = surface
     if (delivered) {

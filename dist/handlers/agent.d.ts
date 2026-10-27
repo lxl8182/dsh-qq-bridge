@@ -3,6 +3,7 @@ import { QqControlDispatcher, QqSpellDispatcher } from './control.js';
 import { AgentRunGate } from '../web-activity.js';
 import { type SavedInput } from '../delivery-store.js';
 import type { QqTurnInput } from '../bridge-events.js';
+import { type InboundImage } from '../onebot/images.js';
 /**
  * 历史配置字段 qqReplyStyleSkill 的默认 skill 名。
  *
@@ -35,7 +36,12 @@ export interface AgentExecutor {
      * @param onChunk 可选:agent 产出过程中的分段回调(流式返回)。
      *        kind='text' 为最终回复文本增量;kind='reasoning' 为思考过程增量。
      */
-    run(sessionKey: string, payload: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void): Promise<string>;
+    run(sessionKey: string, payload: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void, 
+    /**
+     * 本轮随消息一起下载好的图片。缺省表示没有图片,或图片全部不可用。
+     * 实现方必须容忍缺失:图片是增量能力,不是调用前提。
+     */
+    images?: readonly InboundImage[]): Promise<string>;
     /**
      * 本轮真实用户消息在 DSH 侧的身份(可选)。
      *
@@ -122,6 +128,14 @@ export declare class AgentRpcHandler implements Handler {
         qqReplyStyleSkill?: QqReplyStyleSkillOptions;
         /** 由桥接层自己处理、不应再进入 Agent 的命令前缀。 */
         reservedCommands?: readonly string[];
+        /** 单条消息最多取几张图;缺省 4。 */
+        maxImages?: number;
+        /** 单张入站图片的字节上限;超出即丢弃,不截断。 */
+        maxImageBytes?: number;
+        /** 单张图片的下载超时(ms);超时只损失这张图。 */
+        imageTimeoutMs?: number;
+        /** 测试注入用的 fetch;生产留空即用全局 fetch。 */
+        fetchImpl?: typeof fetch;
         /** Assistant 输出控制块的执行器。存在时会先解析最终文本再回发。 */
         controlDispatcher?: QqControlDispatcher;
         /** @deprecated 咒语由 companion-memory 插件执行；桥接层只剥离标签。 */
@@ -153,6 +167,15 @@ export declare class AgentRpcHandler implements Handler {
     private respondChunk;
     run(ctx: HandlerContext): Promise<void>;
     private process;
+    /**
+     * 下载本条消息里的图片。
+     *
+     * 任何失败都只让这一张图缺席:文本照常送达,整轮不会因为图片坏掉而失败。
+     * 丢弃原因写日志(不含字节、不含 base64),便于事后判断是链接过期还是类型不支持。
+     * @param ctx - 含图片地址的入站上下文。
+     * @returns 成功编码的图片;没有图片或全部失败时返回空数组。
+     */
+    private collectImages;
     private runAgentTurn;
     private observeTurn;
     private turnReport;

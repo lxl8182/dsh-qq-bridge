@@ -1,5 +1,5 @@
 import { type QQBotInboundMessage, type ReplyTarget } from '@tencent-connect/qqbot-nodejs';
-import type { OnebotMessageEvent, MessageTargetId, PlatformReplyTarget } from '../onebot/types.js';
+import type { OnebotMessageEvent, OnebotMessageSegment, MessageTargetId, PlatformReplyTarget } from '../onebot/types.js';
 export interface TencentOfficialBotOptions {
     appId: string;
     appSecret: string;
@@ -30,4 +30,14 @@ export declare class TencentOfficialBotClient {
     private handleMessage;
 }
 export declare function toBridgeMessageEvent(msg: QQBotInboundMessage): OnebotMessageEvent | null;
+/**
+ * 把官方机器人的附件归一化成 OneBot 形状的图片段。
+ *
+ * 官方 SDK 已经把附件解析成 `attachments[]`,这里只做形状转换,让下游的图片
+ * 采集逻辑对两种平台共用一份代码。非图片附件不进入结果,也不在这里判类型是否
+ * 可接受——那是下载环节的事。
+ * @param attachments - SDK 的入站附件数组。
+ * @returns 图片段;没有图片时返回空数组。
+ */
+export declare function officialAttachmentSegments(attachments: unknown): OnebotMessageSegment[];
 export {};

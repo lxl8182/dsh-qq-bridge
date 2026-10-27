@@ -115,8 +115,8 @@ export class DshAgentExecutor {
         this.dsh = dsh;
         this.opts = opts;
     }
-    async run(sessionKey, payload, onChunk) {
-        return await this.enqueue(sessionKey, () => this.runNow(sessionKey, payload, onChunk));
+    async run(sessionKey, payload, onChunk, images) {
+        return await this.enqueue(sessionKey, () => this.runNow(sessionKey, payload, onChunk, images));
     }
     async prepareSession(sessionKey) {
         return (await this.getOrCreateSessionAgent(sessionKey)).sessionId;
@@ -141,10 +141,10 @@ export class DshAgentExecutor {
             return undefined;
         return { sessionId: record.sessionId, messageId: record.messageId };
     }
-    async runNow(sessionKey, payload, onChunk) {
+    async runNow(sessionKey, payload, onChunk, images) {
         const { agent, sessionId } = await this.getOrCreateSessionAgent(sessionKey);
         this.turnIdentities.delete(sessionKey);
-        const delivered = await this.dsh.deliver(agent, payload, onChunk);
+        const delivered = await this.dsh.deliver(agent, payload, onChunk, images);
         const surface = await this.readEvents(agent, sessionId);
         let events = surface;
         if (delivered) {

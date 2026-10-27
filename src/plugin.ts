@@ -1,6 +1,8 @@
 import { OnebotClient, WsTransport, Transport } from './onebot/client.js'
 import { createHash, randomUUID } from 'node:crypto'
+import { Buffer } from 'node:buffer'
 import { join } from 'node:path'
+import type { InboundImage } from './onebot/images.js'
 import { MessageRouter, OutboundSender } from './router.js'
 import { AccessGate } from './security.js'
 import { AgentRpcHandler } from './handlers/agent.js'
@@ -589,13 +591,19 @@ function wireDsh(
       agent: DshRenderedAgent,
       prompt: string,
       onChunk?: (text: string, kind: 'text' | 'reasoning') => void,
+      images?: readonly InboundImage[],
     ) {
       // DSH 要求 user message 是「identified」的:必须带 id、role、source.kind。
       // 缺失 id 或 source 用 type 而非 kind,会在 session 校验时抛 「lacks an identified message」。
+      //
+      // 图片必须先经 attachments.saveImages() 取得持久引用,再以
+      // { type: 'image', attachment } 进 content;直接塞 base64 会被 DSH 的
+      // 内容校验拒绝。图片准入失败时退回纯文本,不让整轮失败。
+      const content = await buildDshUserContent(ctx, prompt, images)
       const msg = {
         id: randomUUID(),
         role: 'user',
-        content: [{ type: 'text', text: prompt }],
+        content,
         source: { kind: 'user' },
       }
 
@@ -863,6 +871,66 @@ function createWorkspaceAttachment(ctx: DshCtx): { attach(sessionId: string, cwd
       registry = undefined
     },
   }
+}
+
+/**
+ * 把一张已下载的入站图片交给 DSH 的附件存储,换回持久引用。
+ *
+ * DSH 的图片准入要求 `{ data: Uint8Array, mediaType }`,并会自己做规范化
+ * (解码、尺寸校验、可能的压缩)。这里不做任何图片处理,只做类型转换。
+ * @param ctx - 提供 `attachments` 服务的宿主上下文。
+ * @param image - base64 编码的入站图片。
+ * @returns 持久引用;宿主没有附件服务或准入拒绝时返回 undefined。
+ */
+async function saveInboundImage(
+  ctx: DshCtx,
+  image: InboundImage,
+): Promise<{ attachmentId: string } | undefined> {
+  const attachments = ctx.get?.('attachments') as
+    | { saveImages?(inputs: Array<{ data: Uint8Array; mediaType: string; name?: string }>): Promise<unknown[]> }
+    | undefined
+  if (!attachments?.saveImages) return undefined
+  try {
+    const refs = await attachments.saveImages([{
+      data: new Uint8Array(Buffer.from(image.data, 'base64')),
+      mediaType: image.mediaType,
+      ...(image.name === undefined ? {} : { name: image.name }),
+    }])
+    const ref = refs?.[0] as { attachmentId?: unknown } | undefined
+    if (!ref || typeof ref.attachmentId !== 'string') return undefined
+    return { attachmentId: ref.attachmentId, ...(ref as object) } as { attachmentId: string }
+  } catch (error) {
+    // 准入拒绝(超限/类型不符)只影响这张图;文本照常送达。
+    console.warn(`[dsh-qq-bridge] image admission rejected: ${error instanceof Error ? error.message : String(error)}`)
+    return undefined
+  }
+}
+
+/**
+ * 组装本轮交给 DSH 的用户消息内容。
+ *
+ * 文本块在前、图片块在后。任何一张图准入失败都只是少了那一块,不会退回整条
+ * 消息;没有任何可发内容时(空文本且没有图片)仍保留一个空文本块,让 DSH 报它
+ * 自己的「empty prompt」,而不是桥接层悄悄吞掉这一轮。
+ * @param ctx - 宿主上下文,用于取得附件服务。
+ * @param text - 用户原话。
+ * @param images - 已下载的入站图片。
+ * @returns DSH 可接收的内容块数组。
+ */
+async function buildDshUserContent(
+  ctx: DshCtx,
+  text: string,
+  images?: readonly InboundImage[],
+): Promise<Array<Record<string, unknown>>> {
+  const content: Array<Record<string, unknown>> = []
+  if (text.length > 0) content.push({ type: 'text', text })
+  for (const image of images ?? []) {
+    const attachment = await saveInboundImage(ctx, image)
+    if (!attachment) continue
+    content.push({ type: 'image', attachment })
+  }
+  if (content.length === 0) content.push({ type: 'text', text })
+  return content
 }
 
 export async function attachSessionToWorkspace(

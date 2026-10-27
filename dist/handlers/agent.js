@@ -1,5 +1,6 @@
 import { parseQqControlBlocks, parseQqSpells, } from './control.js';
 import { DeliveryStore } from '../delivery-store.js';
+import { collectInboundImages } from '../onebot/images.js';
 /**
  * 历史配置字段 qqReplyStyleSkill 的默认 skill 名。
  *
@@ -261,7 +262,39 @@ export class AgentRpcHandler {
         await this.runAgentTurn(ctx, sessionKey, payload);
         this.active.delete(ctx);
     }
+    /**
+     * 下载本条消息里的图片。
+     *
+     * 任何失败都只让这一张图缺席:文本照常送达,整轮不会因为图片坏掉而失败。
+     * 丢弃原因写日志(不含字节、不含 base64),便于事后判断是链接过期还是类型不支持。
+     * @param ctx - 含图片地址的入站上下文。
+     * @returns 成功编码的图片;没有图片或全部失败时返回空数组。
+     */
+    async collectImages(ctx) {
+        const sources = ctx.images;
+        if (!sources || sources.length === 0)
+            return [];
+        try {
+            const { images, skipped } = await collectInboundImages(sources, {
+                maxImages: this.opts.maxImages,
+                maxBytes: this.opts.maxImageBytes,
+                timeoutMs: this.opts.imageTimeoutMs,
+                ...(this.opts.fetchImpl === undefined ? {} : { fetchImpl: this.opts.fetchImpl }),
+            });
+            for (const reason of skipped) {
+                console.warn(`[dsh-qq-bridge] inbound image skipped: ${reason}`);
+            }
+            return images;
+        }
+        catch (error) {
+            console.warn(`[dsh-qq-bridge] inbound image collection failed: ${error instanceof Error ? error.message : String(error)}`);
+            return [];
+        }
+    }
     async runAgentTurn(ctx, sessionKey, payload) {
+        // 图片在这里才下载:确认本轮真要交给 Agent 之后,而不是在路由分流时。
+        // 失败只记录,不改变文本轮次的任何行为。
+        const images = await this.collectImages(ctx);
         const ackMessage = this.opts.ackMessage ?? '收到，正在处理...';
         const timeoutMs = this.opts.timeoutMs;
         const timeoutMessage = this.opts.timeoutMessage ?? 'agent 无响应，请稍后重试。';
@@ -286,7 +319,10 @@ export class AgentRpcHandler {
             const canStreamText = this.opts.streamText && !this.opts.controlDispatcher && !this.opts.deliveryStatePath;
             if (!canStreamText) {
                 // AgentExecutor.run resolve 即本轮完成标志:DSH executor 在内部等待 agent.whenIdle()。
-                const result = await withTimeout(this.executor.run(sessionKey, payload), timeoutMs);
+                // 没有图片时保持两参调用:既有实现与测试都按这个形状断言。
+                const result = await withTimeout(images.length === 0
+                    ? this.executor.run(sessionKey, payload)
+                    : this.executor.run(sessionKey, payload, undefined, images), timeoutMs);
                 active = false;
                 if (this.stopped || stored?.retired)
                     return;
@@ -308,7 +344,7 @@ export class AgentRpcHandler {
             // 分段返回:agent 边产出边回发,用户不必等整轮结束。
             // 默认只回发「思考结果」(kind='text');思考过程(reasoning)默认忽略,
             // 避免逐 token 的思考增量在聊天框刷屏。可用 streamReasoning 开启。
-            const result = await withTimeout(this.executor.run(sessionKey, payload, (chunk, kind) => {
+            const onChunk = (chunk, kind) => {
                 if (!active)
                     return;
                 if (kind === 'reasoning' && !this.opts.streamReasoning)
@@ -319,7 +355,10 @@ export class AgentRpcHandler {
                     for (const part of sent)
                         parts.push({ ...part, index: parts.length });
                 });
-            }), timeoutMs);
+            };
+            const result = await withTimeout(images.length === 0
+                ? this.executor.run(sessionKey, payload, onChunk)
+                : this.executor.run(sessionKey, payload, onChunk, images), timeoutMs);
             active = false;
             const final = result || '(no output)';
             // 若流式 text 分段已经覆盖最终结果,不再重复发送最终完整版。

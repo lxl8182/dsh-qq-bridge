@@ -1,5 +1,5 @@
 import { QQBot, type Logger, type QQBotInboundMessage, type ReplyTarget } from '@tencent-connect/qqbot-nodejs'
-import type { OnebotMessageEvent, OnebotMessageType, MessageTargetId, PlatformReplyTarget } from '../onebot/types.js'
+import type { OnebotMessageEvent, OnebotMessageSegment, OnebotMessageType, MessageTargetId, PlatformReplyTarget } from '../onebot/types.js'
 
 export interface TencentOfficialBotOptions {
   appId: string
@@ -124,12 +124,14 @@ export function toBridgeMessageEvent(msg: QQBotInboundMessage): OnebotMessageEve
   const scope = officialScopeToBridgeScope(msg.replyTarget.scope)
   if (scope === null) return null
   const groupId = scope === 'group' ? msg.replyTarget.targetId : undefined
+  const segments = officialAttachmentSegments(msg.attachments)
   return {
     post_type: 'message',
     message_type: scope,
     user_id: msg.senderId,
     ...(groupId === undefined ? {} : { group_id: groupId }),
     raw_message: msg.content,
+    ...(segments.length === 0 ? {} : { message: segments }),
     message_id: msg.messageId,
     reply_target: {
       platform: 'official',
@@ -138,6 +140,34 @@ export function toBridgeMessageEvent(msg: QQBotInboundMessage): OnebotMessageEve
       ...(msg.replyTarget.msgId === undefined ? {} : { msgId: msg.replyTarget.msgId }),
     },
   }
+}
+
+/**
+ * 把官方机器人的附件归一化成 OneBot 形状的图片段。
+ *
+ * 官方 SDK 已经把附件解析成 `attachments[]`,这里只做形状转换,让下游的图片
+ * 采集逻辑对两种平台共用一份代码。非图片附件不进入结果,也不在这里判类型是否
+ * 可接受——那是下载环节的事。
+ * @param attachments - SDK 的入站附件数组。
+ * @returns 图片段;没有图片时返回空数组。
+ */
+export function officialAttachmentSegments(attachments: unknown): OnebotMessageSegment[] {
+  if (!Array.isArray(attachments)) return []
+  const segments: OnebotMessageSegment[] = []
+  for (const raw of attachments) {
+    const item = raw as { content_type?: string; url?: string; filename?: string } | null
+    if (!item || typeof item.url !== 'string' || item.url.length === 0) continue
+    const contentType = typeof item.content_type === 'string' ? item.content_type : ''
+    if (!contentType.toLowerCase().startsWith('image/')) continue
+    segments.push({
+      type: 'image',
+      data: {
+        url: item.url,
+        ...(typeof item.filename === 'string' && item.filename.length > 0 ? { file: item.filename } : {}),
+      },
+    })
+  }
+  return segments
 }
 
 function officialScopeToBridgeScope(scope: string): OnebotMessageType | null {

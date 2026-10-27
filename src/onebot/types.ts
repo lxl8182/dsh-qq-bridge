@@ -16,6 +16,12 @@ export interface PlatformReplyTarget {
   msgId?: string
 }
 
+/** OneBot v11 消息段;本项目只消费 `image`,其余段保持原样不解释。 */
+export interface OnebotMessageSegment {
+  type: string
+  data?: Record<string, unknown>
+}
+
 export interface OnebotMessageEvent {
   /** 事件类型,如 'message' */
   post_type: string
@@ -25,8 +31,14 @@ export interface OnebotMessageEvent {
   user_id: MessageTargetId
   /** 群聊才有 */
   group_id?: MessageTargetId
-  /** 解析后的消息内容(简化为纯文本,后续可扩展富文本段) */
+  /** 文本视图:图片在这里是空的,图片内容只能从 `message` 段取。 */
   raw_message: string
+  /**
+   * 平台原生消息段(OneBot v11),或由官方机器人附件归一化出的图片段。
+   *
+   * 缺省表示平台没有提供段数组(例如只回放 NapCat 日志的单号场景)。
+   */
+  message?: readonly OnebotMessageSegment[]
   /** 消息 id(可用于防重复处理) */
   message_id: MessageTargetId
   /** 私聊时 sub_type: 'friend' | 'group' | 'other' */
