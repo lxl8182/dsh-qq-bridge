@@ -219,6 +219,7 @@ export class AgentRpcHandler implements Handler {
   async retryPending(): Promise<void> {
     if (this.stopped || !this.opts.restoreContext) return
     for (const turn of Object.values(this.delivery.turns)) {
+      if (turn.externallyManaged) continue
       if (turn.state !== 'waiting' && turn.state !== 'output') continue
       const ctx = this.opts.restoreContext(turn.input)
       if (!ctx) { turn.state = 'failed'; await this.delivery.save(); continue }
@@ -231,6 +232,48 @@ export class AgentRpcHandler implements Handler {
         }
       })
     }
+  }
+
+  /** Session followups have no inbound HandlerContext; reuse durable delivery. */
+  async deliverOutput(input: QqTurnInput, outputId: string, parts: Array<{ index: number; text: string }>, canSend: () => Promise<boolean>) {
+    if (this.stopped || !input.owner || input.scope !== 'private' || !input.sessionId || !this.opts.restoreContext) {
+      throw new Error('QQ output session is unavailable')
+    }
+    const ctx = this.opts.restoreContext({
+      scope: input.scope, userId: input.userId, owner: true, payload: '',
+      messageId: outputId,
+    })
+    if (!ctx) throw new Error('QQ output route is unavailable')
+    let result: { status: 'completed' | 'failed' | 'cancelled'; parts: Array<{ index: number; ok: boolean; platformId?: string; error?: string }> } | undefined
+    await this.enqueue(input.sessionKey, async () => {
+      if (this.stopped || this.opts.sessionIdOf?.(input.sessionKey) !== input.sessionId) {
+        throw new Error('QQ output session was replaced')
+      }
+      const { turn } = await this.delivery.accept(ctx, {
+        sessionId: input.sessionId!,
+        externallyManaged: true,
+        parts: parts.map(part => ({ text: part.text, outputIndex: part.index, kind: 'reply', state: 'pending' })),
+      })
+      if (turn.retired) throw new Error('QQ output was retired')
+      this.active.set(ctx, turn)
+      try {
+        let cancelled = false
+        for (const part of turn.parts) if (part.state === 'pending') {
+          if (!await canSend()) { cancelled = true; break }
+          await this.sendPart(ctx, part)
+        }
+        await this.finishDelivery(turn)
+        result = {
+          status: cancelled ? 'cancelled' : turn.state === 'complete' ? 'completed' : 'failed',
+          parts: turn.parts.map((part, index) => ({
+            index: part.outputIndex ?? index, ok: part.state === 'sent',
+            platformId: part.platformId, error: part.error,
+          })),
+        }
+      } finally { this.active.delete(ctx) }
+    })
+    if (!result) throw new Error('QQ output delivery did not run')
+    return result
   }
 
   /** Session followups have no inbound HandlerContext; reuse durable delivery. */

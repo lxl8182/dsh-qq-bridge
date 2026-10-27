@@ -66,6 +66,7 @@ export class DeliveryStore {
         const turn = { id: key, input,
             state: output ? 'output' : 'waiting', parts: output?.parts ?? [],
             ...(output ? { sessionId: output.sessionId } : {}),
+            ...(output?.externallyManaged ? { externallyManaged: true } : {}),
         };
         this.turns[key] = turn;
         const complete = Object.values(this.turns).filter(row => row.state === 'complete' || row.state === 'failed');

@@ -2,6 +2,7 @@ import type { HandlerContext } from './router.js';
 import type { QqTurnReport } from './handlers/agent.js';
 export type SavedInput = Pick<HandlerContext, 'scope' | 'userId' | 'groupId' | 'owner' | 'messageId' | 'payload' | 'replyTarget'>;
 export interface DeliveryPart {
+    outputIndex?: number;
     text: string;
     kind: 'reply' | 'control';
     state: 'pending' | 'sending' | 'sent' | 'unknown';
@@ -17,6 +18,7 @@ export interface DeliveryTurn {
     notified?: boolean;
     sessionId?: string;
     retired?: boolean;
+    externallyManaged?: boolean;
 }
 /** An unfinished generation is never replayed after a crash; only admitted
  * inputs and individually known-unsent text may be retried automatically. */
@@ -30,6 +32,7 @@ export declare class DeliveryStore {
     accept(ctx: HandlerContext, output?: {
         sessionId: string;
         parts: DeliveryPart[];
+        externallyManaged?: boolean;
     }): Promise<{
         turn: DeliveryTurn;
         duplicate: boolean;

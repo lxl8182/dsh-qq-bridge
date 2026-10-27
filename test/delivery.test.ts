@@ -14,6 +14,34 @@ function context(send: NonNullable<HandlerContext['send']>): HandlerContext {
     payload: '真实用户输入', send, respond: async () => {} }
 }
 
+it('external output retries keep stable indices and require a fresh permission check', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'qq-external-'))
+  const sent: string[] = []
+  const input = { sessionKey: 'private:owner', sessionId: 'qq-test', scope: 'private' as const, owner: true, userId: 'owner', input: '' }
+  const opts = { deliveryStatePath: join(root, 'queue.json'), sessionIdOf: () => 'qq-test',
+    restoreContext: (saved: SavedInput) => ({ ...context(async text => {
+      sent.push(text)
+      if (sent.length === 2) throw new Error('offline')
+      return { platformId: 'p' + sent.length }
+    }), ...saved }) }
+  let handler = new AgentRpcHandler({ run: vi.fn() }, opts)
+  try {
+    await handler.open()
+    const first = await handler.deliverOutput(input, 'out1', [{ index: 4, text: 'first' }, { index: 5, text: 'second' }], async () => true)
+    expect(first.parts.map(part => [part.index, part.ok])).toEqual([[4, true], [5, false]])
+    await handler.dispose()
+    handler = new AgentRpcHandler({ run: vi.fn() }, opts)
+    await handler.open()
+    await handler.retryPending()
+    expect(sent).toEqual(['first', 'second'])
+    expect((await handler.deliverOutput(input, 'out1', [{ index: 5, text: 'second' }], async () => false)).status).toBe('cancelled')
+    const recovered = await handler.deliverOutput(input, 'out1', [{ index: 5, text: 'second' }], async () => true)
+    expect(recovered.status).toBe('completed')
+    expect(recovered.parts.map(part => part.index)).toEqual([4, 5])
+    expect(sent).toEqual(['first', 'second', 'second'])
+  } finally { await handler.dispose(); await rm(root, { recursive: true, force: true }) }
+})
+
 it('delivers a bound session followup once, strips spells, and retries only its failed output parts', async () => {
   const root = await mkdtemp(join(tmpdir(), 'qq-followup-'))
   const bridge = new QqBridgeEvents()

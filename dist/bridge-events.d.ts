@@ -24,6 +24,19 @@ export interface QqTurnInput {
 /** 服务在 Cordis 中的名字;订阅方按这个名字注入。 */
 export declare const QQ_BRIDGE_EVENTS_SERVICE = "qqBridgeEvents";
 export type QqTurnListener = (report: QqTurnReport) => void;
+export interface QqOutputDelivery {
+    parts: Array<{
+        index: number;
+        ok: boolean;
+        platformId?: string;
+        error?: string;
+    }>;
+    status: 'completed' | 'failed' | 'cancelled';
+}
+type OutputSender = (sessionId: string, outputId: string, parts: Array<{
+    index: number;
+    text: string;
+}>, canSend: () => Promise<boolean>) => Promise<QqOutputDelivery>;
 /**
  * 一次订阅的句柄。`dispose` 幂等:重复调用、或在服务已卸载后调用都安全。
  */
@@ -44,6 +57,13 @@ export declare class QqBridgeEvents {
     private pusher?;
     platform: 'official' | 'napcat';
     private replay?;
+    private outputSender?;
+    setOutputSender(sender: OutputSender): () => void;
+    normalizeOutput(text: string): string;
+    deliverOutput(sessionId: string, outputId: string, parts: Array<{
+        index: number;
+        text: string;
+    }>, canSend: () => Promise<boolean>): Promise<QqOutputDelivery> | undefined;
     setReplay(replay: () => QqTurnReport[]): () => void;
     binding(sessionId: string): QqTurnInput | undefined;
     subscribeAdmission(listener: (input: QqTurnInput) => Promise<void>): QqTurnSubscription;
@@ -70,3 +90,4 @@ export declare class QqBridgeEvents {
     dispose(): void;
     get listenerCount(): number;
 }
+export {};

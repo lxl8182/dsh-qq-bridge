@@ -1,3 +1,4 @@
+import { parseQqControlBlocks, parseQqSpells } from './handlers/control.js';
 /** 服务在 Cordis 中的名字;订阅方按这个名字注入。 */
 export const QQ_BRIDGE_EVENTS_SERVICE = 'qqBridgeEvents';
 /**
@@ -14,6 +15,18 @@ export class QqBridgeEvents {
     pusher;
     platform = 'official';
     replay;
+    outputSender;
+    setOutputSender(sender) {
+        this.outputSender = sender;
+        return () => { if (this.outputSender === sender)
+            this.outputSender = undefined; };
+    }
+    normalizeOutput(text) {
+        return parseQqControlBlocks(parseQqSpells(text).visibleText).visibleText;
+    }
+    deliverOutput(sessionId, outputId, parts, canSend) {
+        return this.outputSender?.(sessionId, outputId, parts, canSend);
+    }
     setReplay(replay) {
         this.replay = replay;
         return () => { if (this.replay === replay)
@@ -99,6 +112,7 @@ export class QqBridgeEvents {
         this.retirer = undefined;
         this.pusher = undefined;
         this.replay = undefined;
+        this.outputSender = undefined;
     }
     get listenerCount() {
         return this.listeners.size;

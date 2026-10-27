@@ -358,6 +358,11 @@ async function startQqBridge(ctx: DshCtx, cfg: DshQqBridgeConfig, events?: QqBri
     await executor.retireSessionId(sessionId)
   })
   const disposeReplay = events?.setReplay(() => agentHandler.completedReports())
+  const disposeOutputSender = events?.setOutputSender(async (sessionId, outputId, parts, canSend) => {
+    const input = events.binding(sessionId)
+    if (!input) throw new Error('QQ owner session is not bound')
+    return agentHandler.deliverOutput(input, outputId, parts, canSend)
+  })
   // 主动推送通道:其他插件(例如记忆插件)有"没人可回填"的结果时,直接发到
   // 管理员私聊。发给谁、怎么发由桥接决定,调用方只给文字。
   const disposePusher = events?.setPusher
@@ -419,6 +424,7 @@ async function startQqBridge(ctx: DshCtx, cfg: DshQqBridgeConfig, events?: QqBri
     disposeSessionOutput()
     disposeRetirer?.()
     disposeReplay?.()
+    disposeOutputSender?.()
     disposePusher?.()
     await agentHandler.dispose()
     unregisterAgent()
@@ -1003,7 +1009,7 @@ export function registerQqSessionOutput(
     // Ordinary QQ inputs already have their own HandlerContext and send path.
     if (turn.some(row => {
       const input = row as { type?: string; data?: { source?: { kind?: string }; message?: { source?: { kind?: string } } } }
-      return input.type === 'user/message' && (input.data?.message ?? input.data)?.source?.kind === 'user'
+      return input.type === 'user/message' && ['user', 'companion-proactive'].includes((input.data?.message ?? input.data)?.source?.kind ?? '')
     })) return
     const text = extractLastAssistantText(turn)
     if (!text || isUnexecutedDsmlToolCall(text)) return

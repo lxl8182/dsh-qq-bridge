@@ -11,6 +11,7 @@
  * - 桥接未加载时这个服务不存在,订阅方必须自己处理缺失。
  */
 import type { QqTurnReport } from './handlers/agent.js'
+import { parseQqControlBlocks, parseQqSpells } from './handlers/control.js'
 
 export interface QqTurnInput {
   sessionKey: string
@@ -27,6 +28,11 @@ export interface QqTurnInput {
 export const QQ_BRIDGE_EVENTS_SERVICE = 'qqBridgeEvents'
 
 export type QqTurnListener = (report: QqTurnReport) => void
+export interface QqOutputDelivery {
+  parts: Array<{ index: number; ok: boolean; platformId?: string; error?: string }>
+  status: 'completed' | 'failed' | 'cancelled'
+}
+type OutputSender = (sessionId: string, outputId: string, parts: Array<{ index: number; text: string }>, canSend: () => Promise<boolean>) => Promise<QqOutputDelivery>
 
 /**
  * 一次订阅的句柄。`dispose` 幂等:重复调用、或在服务已卸载后调用都安全。
@@ -49,6 +55,20 @@ export class QqBridgeEvents {
   private pusher?: (text: string) => Promise<void>
   platform: 'official' | 'napcat' = 'official'
   private replay?: () => QqTurnReport[]
+  private outputSender?: OutputSender
+
+  setOutputSender(sender: OutputSender): () => void {
+    this.outputSender = sender
+    return () => { if (this.outputSender === sender) this.outputSender = undefined }
+  }
+
+  normalizeOutput(text: string): string {
+    return parseQqControlBlocks(parseQqSpells(text).visibleText).visibleText
+  }
+
+  deliverOutput(sessionId: string, outputId: string, parts: Array<{ index: number; text: string }>, canSend: () => Promise<boolean>): Promise<QqOutputDelivery> | undefined {
+    return this.outputSender?.(sessionId, outputId, parts, canSend)
+  }
 
   setReplay(replay: () => QqTurnReport[]): () => void {
     this.replay = replay
@@ -135,6 +155,7 @@ export class QqBridgeEvents {
     this.retirer = undefined
     this.pusher = undefined
     this.replay = undefined
+    this.outputSender = undefined
   }
 
   get listenerCount(): number {

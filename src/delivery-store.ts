@@ -6,6 +6,7 @@ import type { QqTurnReport } from './handlers/agent.js'
 
 export type SavedInput = Pick<HandlerContext, 'scope' | 'userId' | 'groupId' | 'owner' | 'messageId' | 'payload' | 'replyTarget'>
 export interface DeliveryPart {
+  outputIndex?: number
   text: string
   kind: 'reply' | 'control'
   state: 'pending' | 'sending' | 'sent' | 'unknown'
@@ -21,6 +22,7 @@ export interface DeliveryTurn {
   notified?: boolean
   sessionId?: string
   retired?: boolean
+  externallyManaged?: boolean
 }
 
 /** An unfinished generation is never replayed after a crash; only admitted
@@ -57,7 +59,7 @@ export class DeliveryStore {
     return next
   }
 
-  async accept(ctx: HandlerContext, output?: { sessionId: string; parts: DeliveryPart[] }): Promise<{ turn: DeliveryTurn; duplicate: boolean }> {
+  async accept(ctx: HandlerContext, output?: { sessionId: string; parts: DeliveryPart[]; externallyManaged?: boolean }): Promise<{ turn: DeliveryTurn; duplicate: boolean }> {
     const key = ctx.messageId === undefined ? randomUUID() : createHash('sha256')
       .update(JSON.stringify([ctx.scope, ctx.userId, ctx.groupId, ctx.messageId])).digest('hex')
     if (this.turns[key]) return { turn: this.turns[key], duplicate: true }
@@ -73,6 +75,7 @@ export class DeliveryStore {
     const turn: DeliveryTurn = { id: key, input,
       state: output ? 'output' : 'waiting', parts: output?.parts ?? [],
       ...(output ? { sessionId: output.sessionId } : {}),
+      ...(output?.externallyManaged ? { externallyManaged: true } : {}),
     }
     this.turns[key] = turn
     const complete = Object.values(this.turns).filter(row => row.state === 'complete' || row.state === 'failed')

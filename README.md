@@ -1,6 +1,8 @@
 # dsh-qq-bridge · QQ Remote Control for DSH
 
-本机适配版 `1.0.6-neko.3` 面向 Windows 桌面版 DSH `0.2.1-rc.3`：使用 volatile Config、configForms 和原生 preset 声明，安装到 desktop profile。原 Linux setup 不作为桌面配置入口。
+本机适配版 `1.0.6-neko.4` 面向 Windows 桌面版 DSH `0.2.1-rc.3`：使用 volatile Config、configForms 和原生 preset 声明，安装到 desktop profile。原 Linux setup 不作为桌面配置入口。
+
+`qqBridgeEvents.deliverOutput(sessionId, outputId, parts, canSend)` 供 companion-memory 主动输出复用同一投递队列。稳定 output ID 与原分段索引跨重启保留，已发送段不重复发送；每个待发送段先调用 `canSend` 复查，外部管理的正文由消费插件负责重试。`companion-proactive` 来源由该消费者完成保存与回执，通用自发轮转发器跳过这一来源。
 
 咒语执行归 `dsh-companion-memory@0.2.3`：该插件监听 assistant 消息、创建标准 agent 并用 followup 回填，网页 QQ 预设脱离 bridge 也能运行。bridge 只在 QQ 出站时剥离闭合的中文咒语标签（内置、学咒语/忘掉咒语与学到的名字），不再调用旧执行器或发送旧终端反馈；未闭合标签保留。保存和重试使用剥离后的可见文字，标准咒语 worker 不触发管理员的普通工作会话回复提醒。
 

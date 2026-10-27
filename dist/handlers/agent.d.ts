@@ -159,6 +159,19 @@ export declare class AgentRpcHandler implements Handler {
     private enqueue;
     retryPending(): Promise<void>;
     /** Session followups have no inbound HandlerContext; reuse durable delivery. */
+    deliverOutput(input: QqTurnInput, outputId: string, parts: Array<{
+        index: number;
+        text: string;
+    }>, canSend: () => Promise<boolean>): Promise<{
+        status: "completed" | "failed" | "cancelled";
+        parts: Array<{
+            index: number;
+            ok: boolean;
+            platformId?: string;
+            error?: string;
+        }>;
+    }>;
+    /** Session followups have no inbound HandlerContext; reuse durable delivery. */
     sendSessionOutput(input: QqTurnInput, turnNumber: number, result: string): Promise<void>;
     private sendPart;
     private finishDelivery;
