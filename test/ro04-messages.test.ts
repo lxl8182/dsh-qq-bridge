@@ -88,7 +88,7 @@ it('finishes every bubble before responding to a new input and never repeats sen
   const send = async (text: string) => { sent.push(text); return { platformId: 'p' + sent.length } }
   const make = (id: string, payload: string): HandlerContext => ({ scope: 'private', userId: 1, owner: true,
     messageId: id, payload, respond: async () => {}, send })
-  const executor = { run: vi.fn(async (_key: string, payload: string) => payload === 'first' ? '第一句\n第二句\n第三句' : '收到新消息'),
+  const executor = { run: vi.fn(async (_key: string, payload: string) => payload === 'first' ? '第一句\n\n第二句\n第三句' : '收到新消息'),
     prepareSession: async () => 'qq-test', lastTurnIdentity: () => ({ messageId: 'dsh-input' }) }
   const opts = { ackMessage: '', deliveryStatePath: path, sessionIdOf: () => 'qq-test',
     observeTurn: (report: QqTurnReport) => { reports.push(report) },
@@ -108,14 +108,15 @@ it('finishes every bubble before responding to a new input and never repeats sen
     expect(executor.run).toHaveBeenCalledTimes(1)
     resume()
     await Promise.all([first, second])
-    expect(sent).toEqual(['第一句\n', '第二句\n', '第三句', '收到新消息'])
+    expect(sent).toEqual(['第一句', '第二句', '第三句', '收到新消息'])
     expect(reports.find(report => report.input === 'first')).toMatchObject({ status: 'completed',
-      parts: [{ index: 0, ok: true }, { index: 1, ok: true }, { index: 2, ok: true }] })
+      reply: '第一句\n\n第二句\n第三句',
+      parts: [{ index: 0, chars: 5, ok: true }, { index: 1, chars: 4, ok: true }, { index: 2, chars: 3, ok: true }] })
     expect(Object.values(JSON.parse(await readFile(path, 'utf8')).turns).every((turn: any) => turn.state === 'complete')).toBe(true)
     await handler.dispose()
     const recovered = new AgentRpcHandler(executor, { ...opts, waitForBubble: async () => {} })
     await recovered.open(); await recovered.retryPending(); await recovered.dispose()
-    expect(sent).toEqual(['第一句\n', '第二句\n', '第三句', '收到新消息'])
+    expect(sent).toEqual(['第一句', '第二句', '第三句', '收到新消息'])
     expect(executor.run).toHaveBeenCalledTimes(2)
   } finally { await handler.dispose(); await rm(root, { recursive: true, force: true }) }
 })
@@ -150,6 +151,30 @@ it.each(['proactive', 'followup'])('%s bubbles finish before the queued human in
     await output
     finish()
     await incoming
-    expect(sent).toEqual(['第一句\n', '第二句', '接你的新消息'])
+    expect(sent).toEqual(['第一句', '第二句', '接你的新消息'])
   } finally { finish(); bridge.dispose(); await handler.dispose() }
+})
+
+it.each(['send', 'respond'] as const)('removes boundary blank lines through %s without changing saved parts or block layout', async transport => {
+  const root = await mkdtemp(join(tmpdir(), 'qq-blank-lines-'))
+  const path = join(root, 'delivery.json'), sent: string[] = []
+  const send = async (text: string) => { sent.push(text); return { platformId: 'p' + sent.length } }
+  const parts = [
+    { index: 2, text: '第一句\n\n' },
+    { index: 3, text: '\r\n  缩进内容\r\n \r\n' },
+    { index: 4, text: '```text\n  代码\n\n  下一行\n```\n\n' },
+  ]
+  const input = { sessionKey: 'private:1', sessionId: 'qq-test', scope: 'private' as const, owner: true, userId: 1, input: '' }
+  const handler = new AgentRpcHandler({ run: vi.fn() }, { deliveryStatePath: path, sessionIdOf: () => 'qq-test',
+    restoreContext: saved => ({ ...saved, respond: async text => { await send(text) },
+      ...(transport === 'send' ? { send } : {}) }), waitForBubble: async () => {} })
+  try {
+    await handler.open()
+    const result = await handler.deliverOutput(input, 'blank-lines', parts, async () => true)
+    expect(result.status).toBe('completed')
+    expect(result.parts.map(part => part.index)).toEqual([2, 3, 4])
+    expect(sent).toEqual(['第一句', '  缩进内容', '```text\n  代码\n\n  下一行\n```'])
+    const saved = Object.values(JSON.parse(await readFile(path, 'utf8')).turns)[0] as any
+    expect(saved.parts.map((part: any) => part.text)).toEqual(parts.map(part => part.text))
+  } finally { await handler.dispose(); await rm(root, { recursive: true, force: true }) }
 })

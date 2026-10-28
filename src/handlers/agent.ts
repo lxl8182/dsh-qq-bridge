@@ -322,7 +322,9 @@ export class AgentRpcHandler implements Handler {
     part.state = 'sending'
     await this.delivery.save()
     try {
-      const receipt = ctx.send ? await ctx.send(part.text) : (await ctx.respond(part.text), {})
+      // 分段换行留在原文供回执还原，只在 QQ 发送边界移除首尾空白行。
+      const text = part.text.replace(/^(?:[ \t]*\r?\n)+|(?:\r?\n[ \t]*)+$/gu, '')
+      const receipt = ctx.send ? await ctx.send(text) : (await ctx.respond(text), {})
       part.state = 'sent'
       part.platformId = receipt?.platformId
       delete part.error
