@@ -46,7 +46,7 @@ it('delivers a bound session followup once, strips spells, and retries only its 
   const root = await mkdtemp(join(tmpdir(), 'qq-followup-'))
   const bridge = new QqBridgeEvents()
   const sessionId = 'qq-followup', sessionKey = 'private:owner'
-  let listener: (session: { id: string; events: unknown[] }, event: unknown) => void = () => {}
+  let listener: (session: { id: string; snapshotEvents(): unknown[] }, event: unknown) => void = () => {}
   const unsubscribe = vi.fn()
   const attempts: string[] = []
   const send = async (text: string) => {
@@ -77,10 +77,10 @@ it('delivers a bound session followup once, strips spells, and retries only its 
       { type: 'user/message', data: { id: 'feedback-1', source: { kind: 'companion-spell' } } },
       { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'abcdefghij<执行>secret</执行>' }] } } }, end(2),
     ]
-    listener({ id: sessionId, events }, end(1))
-    listener({ id: 'unbound-session', events }, end(2))
-    listener({ id: sessionId, events }, end(2))
-    listener({ id: sessionId, events }, end(2))
+    listener({ id: sessionId, snapshotEvents: () => events }, end(1))
+    listener({ id: 'unbound-session', snapshotEvents: () => events }, end(2))
+    listener({ id: sessionId, snapshotEvents: () => events }, end(2))
+    listener({ id: sessionId, snapshotEvents: () => events }, end(2))
     await Promise.all(pending)
     expect(attempts).toEqual(['abcd', 'efgh', 'ij'])
     await handler.dispose()

@@ -51,6 +51,7 @@ import { QQ_BRIDGE_EVENTS_SERVICE, QqBridgeEvents } from './bridge-events.js'
 
 /** DSH live agent 最小画面。 */
 interface DshAgent {
+  session: DshSessionSubject
   followup(message: { id: string; role: string; content: unknown; source: unknown }): void
   whenIdle(): Promise<void>
 }
@@ -74,7 +75,7 @@ interface DshCtx extends InteractionCtxLike {
     mount(agentCtx: unknown, preset?: string): Promise<void>
   }
   sessionQuery?: {
-    readSurface(sessionId: string): Promise<{ events: readonly unknown[] }>
+    readSession(sessionId: string): Promise<{ events: readonly unknown[] }>
   }
   workspaceRegistry?: DshWorkspaceRegistry
   llm?: DshLlmRuntime
@@ -138,7 +139,7 @@ export interface DshWorkspaceRegistry {
 interface DshSessionSubject {
   id?: string
   header?: { origin?: string }
-  events?: readonly unknown[]
+  snapshotEvents(): readonly unknown[]
 }
 
 interface BridgeChatClient {
@@ -476,7 +477,7 @@ export function readPlatformMessageId(result: unknown): string | undefined {
   return undefined
 }
 
-function makeDshExecutor(
+export function makeDshExecutor(
   ctx: DshCtx,
   agentCfg?: {
     preset?: string
@@ -571,7 +572,7 @@ function wireDsh(
       await attachWorkspace?.(options.sessionId, cwd)
       interactions?.bindAgent(options.sessionKey, handle.agent)
       // 捕获 live session 对象:用于 session/event 过滤(流式分段)。
-      const session = (handle.agent as { session?: { id?: string } }).session
+      const session = handle.agent.session
       return {
         followup(message) {
           handle.agent.followup(message)
@@ -580,10 +581,8 @@ function wireDsh(
           await handle.agent.whenIdle()
         },
         async readSurface() {
-          // 读 live agent 会话的实时已提交日志(session.events)。
-          // 比走持久化 corpus 的 sessionQuery.readSurface 更及时(避免 whenIdle 后未 flush 的滞后)。
-          const events = (handle.agent as { session?: { events?: readonly unknown[] } }).session?.events
-          return events ?? []
+          // rc.3 的完整日志含 turn/start/end；模型 surface 只有消息，不能用于定位轮次。
+          return session.snapshotEvents()
         },
         async dispose() {
           await handle.dispose()
@@ -686,7 +685,7 @@ function wireDsh(
 
     async readSurface(sessionId: string) {
       if (!query) return []
-      const snap = await query.readSurface(sessionId)
+      const snap = await query.readSession(sessionId)
       return snap.events
     },
   }
@@ -1005,7 +1004,7 @@ export function registerQqSessionOutput(
     if (!sessionId) return
     const binding = bridge.binding(sessionId)
     if (!binding || executor.currentSessionId(binding.sessionKey) !== sessionId) return
-    const turn = eventsForTurn(session.events ?? [], event.data.turn)
+    const turn = eventsForTurn(session.snapshotEvents(), event.data.turn)
     // Ordinary QQ inputs already have their own HandlerContext and send path.
     if (turn.some(row => {
       const input = row as { type?: string; data?: { source?: { kind?: string }; message?: { source?: { kind?: string } } } }
@@ -1033,7 +1032,7 @@ export function createAgentReplyNotifier(
     if (isQqAgentSessionId(sessionId) || sessionId.startsWith('companion-spell-')) return
     const key = `${sessionId}:${event.data.turn}`
     if (sent.has(key)) return
-    const title = findSessionTitle(session.events ?? [])
+    const title = findSessionTitle(session.snapshotEvents())
     sendAgentReplyNotification(client, adminTarget, sent, key, `主人，您收到一条Agent回复，来自[${title}]`)
   })
 }

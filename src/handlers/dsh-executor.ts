@@ -149,7 +149,7 @@ export interface DshServiceHandles {
     /** 本轮随消息下载好的图片;实现方负责把它们变成 DSH 的 ImageBlock。 */
     images?: readonly InboundImage[],
   ): Promise<{ messageId: string } | void>
-  /** 读取会话 surface(events)以提取本轮回复。 */
+  /** 读取包含 turn/start/end 的完整会话事件，以定位本轮回复。 */
   readSurface(sessionId: string): Promise<readonly unknown[]>
 }
 
@@ -232,9 +232,11 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
     const { agent, sessionId } = await this.getOrCreateSessionAgent(sessionKey)
 
     this.turnIdentities.delete(sessionKey)
+    const previousEventCount = (await this.readEvents(agent, sessionId)).length
     const delivered = await this.dsh.deliver(agent, payload, onChunk, images)
     const surface = await this.readEvents(agent, sessionId)
     let events = surface
+    let inputCommitted = !delivered
     if (delivered) {
       const inputIndex = surface.findIndex(event => {
         const row = event as { type?: string; data?: { id?: string; message?: { id?: string } } }
@@ -242,9 +244,14 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
       })
       const start = [...surface.slice(0, inputIndex)].reverse().find(event =>
         (event as { type?: string }).type === 'turn/start') as { data?: { turn?: number } } | undefined
-      if (inputIndex < 0 || start?.data?.turn === undefined) throw new Error('DSH input turn was not committed')
-      events = eventsForTurn(surface, start.data.turn)
-      this.turnIdentities.set(sessionKey, { sessionId, messageId: delivered.messageId })
+      if (inputIndex >= 0 && start?.data?.turn !== undefined) {
+        events = eventsForTurn(surface, start.data.turn)
+        inputCommitted = true
+        this.turnIdentities.set(sessionKey, { sessionId, messageId: delivered.messageId })
+      } else {
+        // 准入失败可能在 user/message 提交前结束；先报告本次的真实错误。
+        events = surface.slice(previousEventCount)
+      }
     }
     const lastEnd = [...events].reverse().find(event =>
       (event as { type?: string })?.type === 'turn/end') as
@@ -253,6 +260,7 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
     if (reason?.kind === 'blocked' || reason?.kind === 'error' || reason?.kind === 'aborted') {
       throw new Error(reason.error?.message ?? `DSH turn ${reason.kind}`)
     }
+    if (!inputCommitted) throw new Error('DSH input turn was not committed')
     // Record the identity of the input this turn actually consumed, before the
     // reply is extracted: a later lookup must not pair a reply with the next
     // turn's input.

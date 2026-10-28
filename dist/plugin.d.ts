@@ -5,11 +5,12 @@ import { BridgeModelSelection } from './handlers/model-control.js';
 import { DshQqBridgeConfig } from './config.js';
 import { OnebotMessageEvent, PlatformReplyTarget } from './onebot/types.js';
 import type { MessageTargetId } from './onebot/types.js';
-import { InteractionCtxLike } from './interactions.js';
+import { InteractionCtxLike, QqInteractionBridge } from './interactions.js';
 import type { BridgeConfigRef } from './settings.js';
 import { QqBridgeEvents } from './bridge-events.js';
 /** DSH live agent 最小画面。 */
 interface DshAgent {
+    session: DshSessionSubject;
     followup(message: {
         id: string;
         role: string;
@@ -42,7 +43,7 @@ interface DshCtx extends InteractionCtxLike {
         mount(agentCtx: unknown, preset?: string): Promise<void>;
     };
     sessionQuery?: {
-        readSurface(sessionId: string): Promise<{
+        readSession(sessionId: string): Promise<{
             events: readonly unknown[];
         }>;
     };
@@ -105,7 +106,7 @@ interface DshSessionSubject {
     header?: {
         origin?: string;
     };
-    events?: readonly unknown[];
+    snapshotEvents(): readonly unknown[];
 }
 interface BridgeChatClient {
     connect(): Promise<void>;
@@ -141,6 +142,14 @@ export declare function agentReplyNotificationsEnabled(cfg: DshQqBridgeConfig): 
  * 提取:取不到就是取不到,不合成假 id。
  */
 export declare function readPlatformMessageId(result: unknown): string | undefined;
+export declare function makeDshExecutor(ctx: DshCtx, agentCfg?: {
+    preset?: string;
+    provider?: string;
+    model?: string;
+    reasoningEffort?: string;
+    models?: readonly string[];
+    cwd?: string;
+}, interactions?: QqInteractionBridge, attachWorkspace?: (sessionId: string, cwd: string) => Promise<void>, llm?: () => DshLlmRuntime | undefined, commands?: () => DshCommandRuntime | undefined): DshAgentExecutor;
 export declare function attachSessionToWorkspace(registry: DshWorkspaceRegistry, sessionId: string, cwd: string): Promise<void>;
 /** Forward completed followups only for sessions bound by an admitted QQ input. */
 export declare function registerQqSessionOutput(ctx: Pick<DshCtx, 'on'>, executor: Pick<DshAgentExecutor, 'currentSessionId'>, bridge: QqBridgeEvents | undefined, handler: Pick<AgentRpcHandler, 'sendSessionOutput'>): () => void;

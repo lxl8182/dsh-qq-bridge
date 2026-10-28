@@ -10,7 +10,7 @@ import {
 type SessionSubject = {
   id?: string
   header?: { origin?: string }
-  events?: readonly unknown[]
+  snapshotEvents(): readonly unknown[]
 }
 
 describe('dsh-qq-bridge — agent reply notifier', () => {
@@ -39,12 +39,12 @@ describe('dsh-qq-bridge — agent reply notifier', () => {
 
     const session = {
       id: 's1',
-      events: [{ type: 'session/title', data: { title: 'Web 会话' } }],
+      snapshotEvents: () => [{ type: 'session/title', data: { title: 'Web 会话' } }],
     }
     listener?.(session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
     listener?.(session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
     listener?.(session, { type: 'turn/end', data: { turn: 2, reason: { kind: 'error' } } })
-    listener?.({ id: 'child', header: { origin: 'subagent' }, events: [] }, {
+    listener?.({ id: 'child', header: { origin: 'subagent' }, snapshotEvents: () => [] }, {
       type: 'turn/end',
       data: { turn: 1, reason: { kind: 'completed' } },
     })
@@ -68,10 +68,10 @@ describe('dsh-qq-bridge — agent reply notifier', () => {
     const dispose = createAgentReplyNotifier(ctx, client as never, 10001)
     const session = {
       id: 'qq-session-1',
-      events: [{ type: 'session/title', data: { title: 'QQ 会话' } }],
+      snapshotEvents: () => [{ type: 'session/title', data: { title: 'QQ 会话' } }],
     }
     listener?.(session, { type: 'turn/end', data: { turn: 3, reason: { kind: 'completed' } } })
-    listener?.({ id: 'companion-spell-test', events: [] }, {
+    listener?.({ id: 'companion-spell-test', snapshotEvents: () => [] }, {
       type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } },
     })
 

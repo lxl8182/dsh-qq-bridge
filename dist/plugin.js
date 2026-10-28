@@ -336,7 +336,7 @@ export function readPlatformMessageId(result) {
     }
     return undefined;
 }
-function makeDshExecutor(ctx, agentCfg, interactions, attachWorkspace, llm, commands) {
+export function makeDshExecutor(ctx, agentCfg, interactions, attachWorkspace, llm, commands) {
     const handles = wireDsh(ctx, agentCfg, interactions, attachWorkspace);
     const modelOptions = {
         defaultCwd: agentCfg?.cwd ? resolveUserPath(agentCfg.cwd) : undefined,
@@ -410,10 +410,8 @@ function wireDsh(ctx, agentCfg, interactions, attachWorkspace) {
                     await handle.agent.whenIdle();
                 },
                 async readSurface() {
-                    // 读 live agent 会话的实时已提交日志(session.events)。
-                    // 比走持久化 corpus 的 sessionQuery.readSurface 更及时(避免 whenIdle 后未 flush 的滞后)。
-                    const events = handle.agent.session?.events;
-                    return events ?? [];
+                    // rc.3 的完整日志含 turn/start/end；模型 surface 只有消息，不能用于定位轮次。
+                    return session.snapshotEvents();
                 },
                 async dispose() {
                     await handle.dispose();
@@ -517,7 +515,7 @@ function wireDsh(ctx, agentCfg, interactions, attachWorkspace) {
         async readSurface(sessionId) {
             if (!query)
                 return [];
-            const snap = await query.readSurface(sessionId);
+            const snap = await query.readSession(sessionId);
             return snap.events;
         },
     };
@@ -829,7 +827,7 @@ export function registerQqSessionOutput(ctx, executor, bridge, handler) {
         const binding = bridge.binding(sessionId);
         if (!binding || executor.currentSessionId(binding.sessionKey) !== sessionId)
             return;
-        const turn = eventsForTurn(session.events ?? [], event.data.turn);
+        const turn = eventsForTurn(session.snapshotEvents(), event.data.turn);
         // Ordinary QQ inputs already have their own HandlerContext and send path.
         if (turn.some(row => {
             const input = row;
@@ -859,7 +857,7 @@ export function createAgentReplyNotifier(ctx, client, adminTarget) {
         const key = `${sessionId}:${event.data.turn}`;
         if (sent.has(key))
             return;
-        const title = findSessionTitle(session.events ?? []);
+        const title = findSessionTitle(session.snapshotEvents());
         sendAgentReplyNotification(client, adminTarget, sent, key, `主人，您收到一条Agent回复，来自[${title}]`);
     });
 }

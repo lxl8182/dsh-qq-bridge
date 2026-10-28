@@ -144,25 +144,34 @@ export class DshAgentExecutor {
     async runNow(sessionKey, payload, onChunk, images) {
         const { agent, sessionId } = await this.getOrCreateSessionAgent(sessionKey);
         this.turnIdentities.delete(sessionKey);
+        const previousEventCount = (await this.readEvents(agent, sessionId)).length;
         const delivered = await this.dsh.deliver(agent, payload, onChunk, images);
         const surface = await this.readEvents(agent, sessionId);
         let events = surface;
+        let inputCommitted = !delivered;
         if (delivered) {
             const inputIndex = surface.findIndex(event => {
                 const row = event;
                 return row.type === 'user/message' && (row.data?.message ?? row.data)?.id === delivered.messageId;
             });
             const start = [...surface.slice(0, inputIndex)].reverse().find(event => event.type === 'turn/start');
-            if (inputIndex < 0 || start?.data?.turn === undefined)
-                throw new Error('DSH input turn was not committed');
-            events = eventsForTurn(surface, start.data.turn);
-            this.turnIdentities.set(sessionKey, { sessionId, messageId: delivered.messageId });
+            if (inputIndex >= 0 && start?.data?.turn !== undefined) {
+                events = eventsForTurn(surface, start.data.turn);
+                inputCommitted = true;
+                this.turnIdentities.set(sessionKey, { sessionId, messageId: delivered.messageId });
+            }
+            else {
+                // 准入失败可能在 user/message 提交前结束；先报告本次的真实错误。
+                events = surface.slice(previousEventCount);
+            }
         }
         const lastEnd = [...events].reverse().find(event => event?.type === 'turn/end');
         const reason = lastEnd?.data?.reason;
         if (reason?.kind === 'blocked' || reason?.kind === 'error' || reason?.kind === 'aborted') {
             throw new Error(reason.error?.message ?? `DSH turn ${reason.kind}`);
         }
+        if (!inputCommitted)
+            throw new Error('DSH input turn was not committed');
         // Record the identity of the input this turn actually consumed, before the
         // reply is extracted: a later lookup must not pair a reply with the next
         // turn's input.

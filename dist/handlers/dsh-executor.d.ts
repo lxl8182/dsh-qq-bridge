@@ -72,7 +72,7 @@ export interface DshServiceHandles {
     images?: readonly InboundImage[]): Promise<{
         messageId: string;
     } | void>;
-    /** 读取会话 surface(events)以提取本轮回复。 */
+    /** 读取包含 turn/start/end 的完整会话事件，以定位本轮回复。 */
     readSurface(sessionId: string): Promise<readonly unknown[]>;
 }
 /**

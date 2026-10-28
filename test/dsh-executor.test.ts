@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { DshAgentExecutor, extractLastAssistantText, hashKey, DshRenderedAgent, isUnexecutedDsmlToolCall } from '../src/handlers/dsh-executor.js'
 import { BridgeModelSelectionRef, installBridgeModelSelection } from '../src/handlers/model-control.js'
+import { makeDshExecutor } from '../src/plugin.js'
 
 function surfaceEvent(type: string, content: unknown[]) {
   return { type, content }
@@ -57,6 +58,63 @@ function makeMock(repliesBySession: Record<string, unknown[]>) {
 }
 
 describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
+  it('reads the rc.3 live log, retaining turn boundaries and the original input before spell followups', async () => {
+    const events: unknown[] = []
+    const session = { id: '', snapshotEvents: () => events }
+    const readSession = vi.fn(async () => ({ events: [] }))
+    const dispose = vi.fn(async () => {})
+    const executor = makeDshExecutor({
+      agentLoop: { createAgent: async (_ctx: unknown, options: { sessionId: string }) => {
+        session.id = options.sessionId
+        return { dispose, agent: {
+          session,
+          followup(message: unknown) {
+            events.push(
+              { type: 'turn/start', data: { turn: 1 } },
+              { type: 'user/message', data: message },
+              { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '我先看看。' }] } } },
+              { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+              { type: 'turn/start', data: { turn: 2 } },
+              { type: 'user/message', data: { id: 'feedback', source: { kind: 'companion-spell' } } },
+              { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '看完了。' }] } } },
+              { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } },
+            )
+          },
+          async whenIdle() {},
+        } }
+      } },
+      sessionQuery: { readSession },
+    } as never)
+    expect(await executor.run('private:owner', '帮我看看')).toBe('我先看看。')
+    const input = events[1] as { data: { id: string } }
+    expect(executor.lastTurnIdentity('private:owner')).toEqual({ sessionId: session.id, messageId: input.data.id })
+    await executor.disposeAll()
+    expect(dispose).toHaveBeenCalledOnce()
+  })
+
+  it('reports the current admission failure before input commit instead of hiding it behind the commit check', async () => {
+    const events: unknown[] = [
+      { type: 'turn/start', data: { turn: 1 } },
+      { type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: { message: 'old failure' } } } },
+    ]
+    const executor = makeDshExecutor({ agentLoop: { createAgent: async () => ({
+      agent: {
+        session: { snapshotEvents: () => events },
+        followup() {
+          events.push(
+            { type: 'turn/start', data: { turn: 2 } },
+            { type: 'turn/end', data: { turn: 2, reason: { kind: 'error', error: { message: 'current admission failed' } } } },
+          )
+        },
+        async whenIdle() {},
+      },
+      async dispose() {},
+    }) } } as never)
+    await expect(executor.run('private:owner', '新消息')).rejects.toThrow('current admission failed')
+    expect(executor.lastTurnIdentity('private:owner')).toBeUndefined()
+    await executor.disposeAll()
+  })
+
   it('binds the reply and identity to the delivered turn even when followups finish before idle', async () => {
     const sid = `qq-${hashKey('private:10001')}`
     const message = (id: string, kind: string, text: string) => ({ type: 'user/message',
