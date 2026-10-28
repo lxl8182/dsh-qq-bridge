@@ -95,7 +95,8 @@ describe('RO04-B 绑定恢复:重启后不需要新发言', () => {
           parts: [{ index: 0, text: '第一句\n' }, { index: 1, text: '第二句' }] })
         expect(outcome).toMatchObject({ status: 'completed', pending: [] })
         expect(outcome.parts.map(part => [part.index, part.ok])).toEqual([[0, true], [1, true]])
-        expect(sent).toEqual(['第一句\n', '第二句'])
+        // 分段正文保留边界换行供回执还原，QQ 发送边界会剥掉尾部空行。
+        expect(sent).toEqual(['第一句', '第二句'])
       } finally { off() }
       await handler.dispose()
       second.dispose()
@@ -276,7 +277,8 @@ describe('RO04-B 通用投递:按 output/part 索引分段、部分失败可续'
           parts: [{ index: 1, text: '第二段' }, { index: 2, text: '第三段' }] })
         expect(outcome).toMatchObject({ status: 'completed', pending: [] })
         expect(resumed).toEqual(['第二段', '第三段'])
-        expect(attempts).toEqual(['第一段\n', '第二段'])
+        // 同一规则：attempts 记录的是实际发到平台的文本。
+        expect(attempts).toEqual(['第一段', '第二段'])
       } finally { off2() }
       await restarted.dispose()
       second.dispose()
