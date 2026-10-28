@@ -748,9 +748,19 @@ export function createSegmentPolicyAccess(ctx, executor) {
         },
     };
 }
-function createWorkspaceAttachment(ctx) {
+export function createWorkspaceAttachment(ctx) {
     let registry;
+    const pending = new Map();
     const disposers = [];
+    const attach = async (sessionId, cwd) => {
+        pending.set(sessionId, cwd);
+        const active = registry;
+        if (!active)
+            return;
+        await attachSessionToWorkspace(active, sessionId, cwd);
+        if (pending.get(sessionId) === cwd)
+            pending.delete(sessionId);
+    };
     if (ctx.inject) {
         const fiber = ctx.inject(['workspaceRegistry'], (childCtx) => {
             const scoped = childCtx;
@@ -760,6 +770,8 @@ function createWorkspaceAttachment(ctx) {
                 if (registry === current)
                     registry = undefined;
             }, 'dsh-qq-bridge.workspaceRegistry');
+            for (const [sessionId, cwd] of pending)
+                void attach(sessionId, cwd);
         }, 'dsh-qq-bridge.workspaceRegistry');
         if (fiber && typeof fiber === 'object' && typeof fiber.dispose === 'function') {
             disposers.push(() => fiber.dispose());
@@ -769,16 +781,12 @@ function createWorkspaceAttachment(ctx) {
         registry = ctx.workspaceRegistry;
     }
     return {
-        async attach(sessionId, cwd) {
-            const active = registry;
-            if (!active)
-                return;
-            await attachSessionToWorkspace(active, sessionId, cwd);
-        },
+        attach,
         dispose() {
             for (const dispose of disposers.splice(0))
                 dispose();
             registry = undefined;
+            pending.clear();
         },
     };
 }

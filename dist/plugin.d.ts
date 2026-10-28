@@ -168,6 +168,10 @@ type SegmentPolicyTarget = {
 export declare function createSegmentPolicyAccess(ctx: DshCtx, executor: SegmentPolicyTarget): {
     dispose(): void;
 };
+export declare function createWorkspaceAttachment(ctx: DshCtx): {
+    attach(sessionId: string, cwd: string): Promise<void>;
+    dispose(): void;
+};
 export declare function attachSessionToWorkspace(registry: DshWorkspaceRegistry, sessionId: string, cwd: string): Promise<void>;
 /** Forward completed followups only for sessions bound by an admitted QQ input. */
 export declare function registerQqSessionOutput(ctx: Pick<DshCtx, 'on'>, executor: Pick<DshAgentExecutor, 'currentSessionId'>, bridge: QqBridgeEvents | undefined, handler: Pick<AgentRpcHandler, 'sendSessionOutput'>): () => void;

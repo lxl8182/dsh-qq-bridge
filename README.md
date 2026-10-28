@@ -1,18 +1,20 @@
 # dsh-qq-bridge · QQ Remote Control for DSH
 
-本批适配版 `1.0.6-neko.7` 已完成本机验收，面向 DSH `0.2.1-rc.3`：使用 volatile Config、configForms 和原生 preset 声明。本机桌面与服务器 Web 通过各自 profile 安装，原 Linux setup 不作为桌面配置入口。
+本批适配版 `1.0.6-neko.9` 已完成本机验收，面向 DSH `0.2.1-rc.3`：使用 volatile Config、configForms 和原生 preset 声明。本机桌面与服务器 Web 通过各自 profile 安装，原 Linux setup 不作为桌面配置入口。
 
 QQ 入站按结构化消息段提取正文和图片，原始图片 CQ 码与下载地址不进入 DSH/记忆正文；附件准入在记忆准备前完成，单张图片失败会留下对应的未读取状态。纯文字中的 CQ 代码示例保留。
 
 回复完成后，普通聊天按自然换行形成独立气泡，代码、列表和引用保持整体；每条间隔约 0.8—2 秒。普通回复、主动搭话和咒语后续都完整发完本轮气泡，新消息在同会话队列等待；正在生成的主动轮次同样先完成再接新输入。平台失败停止后续发送，恢复只继续已知未发送片段。持久分段按 Unicode 码点计数，同一轮的完整可见 assistant 消息按 ID 去重并顺序投递；推理和后台过程不转发。设置页已移除逐增量回发开关。
 
-配套版本 `dsh-rin-memory 0.3.0` 通过 `qqBridgeEvents.assistantText/planOutput` 复用可见消息与气泡边界，主动完成提交使用核心 `rin-memory 0.1.0.dev11` 的 `part_sizes`。持久正文与回执保留原始分段和 Unicode 码点数；QQ 发送时移除各片段首尾空白行，保留片段内部换行、代码和缩进，避免气泡底部出现空行。
+配套版本 `dsh-rin-memory 0.3.1` 通过 `qqBridgeEvents.assistantText/planOutput` 复用可见消息与气泡边界，主动完成提交使用核心 `rin-memory 0.1.0.dev11` 的 `part_sizes`。持久正文与回执保留原始分段和 Unicode 码点数；QQ 发送时移除各片段首尾空白行，保留片段内部换行、代码和缩进，避免气泡底部出现空行。
 
 本批由 `dsh-rin-memory` 持有统一候选与模型联系计划；bridge负责合法身份、分段端口和唯一持久投递。上下文达到128K软预算后，在本轮气泡发完才切换内部DSH段，QQ聊天与长期记忆连续。服务器仍需在本机验收后手动安装固定提交的新版本包。
 
 轮次定位和咒语反馈读取 rc.3 的 `session.snapshotEvents()` 完整日志，查询回退使用 `sessionQuery.readSession()`；模型 surface 不包含 turn 边界，不能用于确认输入是否提交。准入在输入提交前失败时，回报本次的真实失败原因。
 
 `qqBridgeEvents.deliverByIndex({ sessionKey, sessionId, outputId, parts }, canSend)` 供 `dsh-rin-memory` 主动输出复用同一投递队列；原 `deliverOutput` 接口继续可用。稳定 output ID 与原分段索引跨重启保留，已发送段不重复发送；每个待发送段先调用 `canSend` 复查，外部管理的正文由消费插件负责重试。`companion-proactive` 来源由该消费者完成保存与回执，通用自发轮转发器跳过这一来源。插件通过 `bindingRecords/restoreBindings/ensureSessions` 保存并恢复桥接校验过的主人绑定，重启后无需先发一条 QQ 消息。
+
+QQ 会话按 `agent.cwd` 归入对应工作区；工作区服务尚未就绪时暂存归属请求，服务就绪后补交，避免启动恢复的 QQ 会话留在“未分组”。
 
 咒语执行归 `dsh-rin-memory`：该插件监听 assistant 消息、创建标准 agent 并用 followup 回填，网页 QQ 预设脱离 bridge 也能运行。bridge 只在 QQ 出站时剥离闭合的中文咒语标签（内置、学咒语/忘掉咒语与学到的名字），不再调用旧执行器或发送旧终端反馈；未闭合标签保留。保存和重试使用剥离后的可见文字，标准咒语 worker 不触发管理员的普通工作会话回复提醒。
 
@@ -710,7 +712,7 @@ pnpm dsh web --patch /tmp/dsh-qq-bridge-agent.patch.yml \
 - 本 fork（个人）：`origin` → `https://github.com/lxl8182/dsh-qq-bridge`
 - 同步方式：`git fetch upstream && git merge upstream/main`；本地 `main` 直接开发并推送到 `origin/main`，不向 `upstream` 推送，不 force-push。
 
-本 fork 基于上游 `6e13f95` 开发，本批目标版本 `1.0.6-neko.7`（Windows 桌面版 DSH `0.2.1-rc.3` 本机适配）。MIT License 与原作者版权沿用上游，见 [LICENSE](LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+本 fork 基于上游 `6e13f95` 开发，本批目标版本 `1.0.6-neko.9`（Windows 桌面版 DSH `0.2.1-rc.3` 本机适配）。MIT License 与原作者版权沿用上游，见 [LICENSE](LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 许可与致谢
 

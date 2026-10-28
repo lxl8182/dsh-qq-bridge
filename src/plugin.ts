@@ -924,9 +924,18 @@ export function createSegmentPolicyAccess(
   }
 }
 
-function createWorkspaceAttachment(ctx: DshCtx): { attach(sessionId: string, cwd: string): Promise<void>; dispose(): void } {
+export function createWorkspaceAttachment(ctx: DshCtx): { attach(sessionId: string, cwd: string): Promise<void>; dispose(): void } {
   let registry: DshWorkspaceRegistry | undefined
+  const pending = new Map<string, string>()
   const disposers: Array<() => void> = []
+
+  const attach = async (sessionId: string, cwd: string): Promise<void> => {
+    pending.set(sessionId, cwd)
+    const active = registry
+    if (!active) return
+    await attachSessionToWorkspace(active, sessionId, cwd)
+    if (pending.get(sessionId) === cwd) pending.delete(sessionId)
+  }
 
   if (ctx.inject) {
     const fiber = ctx.inject(['workspaceRegistry'], (childCtx) => {
@@ -936,6 +945,7 @@ function createWorkspaceAttachment(ctx: DshCtx): { attach(sessionId: string, cwd
       scoped.effect?.(() => () => {
         if (registry === current) registry = undefined
       }, 'dsh-qq-bridge.workspaceRegistry')
+      for (const [sessionId, cwd] of pending) void attach(sessionId, cwd)
     }, 'dsh-qq-bridge.workspaceRegistry')
     if (fiber && typeof fiber === 'object' && typeof fiber.dispose === 'function') {
       disposers.push(() => fiber.dispose())
@@ -945,14 +955,11 @@ function createWorkspaceAttachment(ctx: DshCtx): { attach(sessionId: string, cwd
   }
 
   return {
-    async attach(sessionId: string, cwd: string): Promise<void> {
-      const active = registry
-      if (!active) return
-      await attachSessionToWorkspace(active, sessionId, cwd)
-    },
+    attach,
     dispose(): void {
       for (const dispose of disposers.splice(0)) dispose()
       registry = undefined
+      pending.clear()
     },
   }
 }
