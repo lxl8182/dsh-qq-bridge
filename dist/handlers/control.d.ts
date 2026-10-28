@@ -24,8 +24,8 @@ export interface ParsedQqSpells {
 /**
  * 从回复里拆出可见正文与咒语。
  *
- * 未闭合的标签不当作咒语执行：那多半是模型写了一半就停了，如实留在正文里让
- * 用户看见"它想做什么但没说完"，而不是猜一个意思去跑。
+ * 普通咒语未闭合时保留原文。联系与选题是私有元数据，先剥离；未闭合的
+ * 元数据尾段也不会进入 QQ 或咒语执行器。
  */
 export declare function parseQqSpells(text: string): ParsedQqSpells;
 /** 一条咒语执行结束后回填给模型的「终端反馈」。 */

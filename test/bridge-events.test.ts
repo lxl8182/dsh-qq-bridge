@@ -37,6 +37,29 @@ function harness(options: { gate?: Partial<ConstructorParameters<typeof AccessGa
 }
 
 describe('bridge turn report — facts other plugins may rely on', () => {
+  it('ordinary and followup replies keep contact metadata out of both QQ and turn reports', async () => {
+    const { router, sent } = harness({ withReceipt: true })
+    const reports: string[] = []
+    const raw = '明天再聊<下次联系>明天20:30｜面试</下次联系><选题>c1</选题>'
+    router.register(new AgentRpcHandler({ run: async () => raw }, {
+      ackMessage: '', observeTurn: report => reports.push(report.reply),
+    }))
+    await router.route(makeEvent({ user_id: 10001, raw_message: '好呀' }))
+    expect(sent).toEqual(['明天再聊'])
+    expect(reports).toEqual(['明天再聊'])
+
+    const followup = new AgentRpcHandler({ run: async () => 'unexpected' }, {
+      sessionIdOf: () => 'qq-followup',
+      restoreContext: input => ({ ...input, respond: async text => { sent.push(text) } }),
+    })
+    try {
+      await followup.sendSessionOutput({ sessionKey: 'private:10001', sessionId: 'qq-followup',
+        scope: 'private', owner: true, userId: 10001, input: '' }, 2, raw)
+      expect(sent).toEqual(['明天再聊', '明天再聊'])
+      expect(reports).toEqual(['明天再聊'])
+    } finally { await followup.dispose() }
+  })
+
   it('reports the owner flag from the configured admin identity only', async () => {
     const { router } = harness()
     const seen: Array<{ owner: boolean; user: string | number }> = []

@@ -13,11 +13,12 @@ export const QQ_SPELL_TAGS = ['读取', '生成', '执行', '翻本子', '改写
 /**
  * 从回复里拆出可见正文与咒语。
  *
- * 未闭合的标签不当作咒语执行：那多半是模型写了一半就停了，如实留在正文里让
- * 用户看见"它想做什么但没说完"，而不是猜一个意思去跑。
+ * 普通咒语未闭合时保留原文。联系与选题是私有元数据，先剥离；未闭合的
+ * 元数据尾段也不会进入 QQ 或咒语执行器。
  */
 export function parseQqSpells(text) {
-    const source = String(text ?? '');
+    const source = String(text ?? '').replace(/<(下次联系|选题)>[\s\S]*?<\/\1>/gu, '')
+        .replace(/<(?:下次联系|选题)>[\s\S]*$/u, '');
     const spells = [];
     if (!source)
         return { visibleText: '', spells };
@@ -34,7 +35,8 @@ export function parseQqSpells(text) {
         last = match.index + match[0].length;
     }
     visible += source.slice(last);
-    return { visibleText: visible.replace(/\n{3,}/g, '\n\n').trim(), spells };
+    const visibleText = visible.replace(/\n{3,}/g, '\n\n').trim();
+    return { visibleText: visibleText === '[PASS]' ? '' : visibleText, spells };
 }
 /** 一条咒语执行结束后回填给模型的「终端反馈」。 */
 export function renderQqSpellFeedback(spell, ok, text) {

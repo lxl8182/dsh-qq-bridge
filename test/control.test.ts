@@ -8,10 +8,22 @@ import {
   createSetPermissionControlHandler,
   createSetReasoningEffortControlHandler,
   parseQqControlBlocks,
+  parseQqSpells,
   QqControlDispatcher,
 } from '../src/handlers/control.js'
 
 describe('QQ control blocks', () => {
+  it('contact metadata never becomes a QQ spell, visible text or PASS bubble', () => {
+    expect(parseQqSpells('好呀<下次联系>明天20:30｜面试</下次联系><选题>c1</选题>'))
+      .toEqual({ visibleText: '好呀', spells: [] })
+    expect(parseQqSpells('[PASS]<下次联系>等新进展</下次联系>'))
+      .toEqual({ visibleText: '', spells: [] })
+    expect(parseQqSpells('好呀<下次联系>明天')).toEqual({ visibleText: '好呀', spells: [] })
+    expect(parseQqSpells('好呀<下次联系>明天<选题>c1</选题></下次联系>'))
+      .toEqual({ visibleText: '好呀', spells: [] })
+    expect(parseQqSpells('好呀<下次联系>明天</选题>私有尾段'))
+      .toEqual({ visibleText: '好呀', spells: [] })
+  })
   it('extracts JSON actions and hides control text from the visible reply', () => {
     const parsed = parseQqControlBlocks([
       '稍等',
