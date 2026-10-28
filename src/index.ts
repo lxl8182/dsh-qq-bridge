@@ -15,7 +15,15 @@ export type { AgentExecutor, AgentTurnObserver, QqTurnReport } from './handlers/
 export { DshAgentExecutor, extractLastAssistantText, extractLastUserMessage, hashKey } from './handlers/dsh-executor.js'
 export type { DshRenderedAgent } from './handlers/dsh-executor.js'
 export { QQ_BRIDGE_EVENTS_SERVICE, QqBridgeEvents } from './bridge-events.js'
-export type { QqTurnListener, QqTurnSubscription } from './bridge-events.js'
+export type {
+  QqBindingRecord,
+  QqBindingRestoreReport,
+  QqDeliveryOutcome,
+  QqDeliveryPart,
+  QqDeliveryRequest,
+  QqTurnListener,
+  QqTurnSubscription,
+} from './bridge-events.js'
 export { DIR_COMMAND, DirectoryHandler, resolveUserPath } from './handlers/directory.js'
 export type { DirectorySwitcher } from './handlers/directory.js'
 export {

@@ -79,4 +79,49 @@ export class DeliveryStore {
         await this.save();
         return { turn, duplicate: false };
     }
+    /** 找到某个稳定 outputId 对应的投递记录;没有时返回 undefined。 */
+    outputTurn(outputId) {
+        if (!outputId)
+            return undefined;
+        for (const turn of Object.values(this.turns)) {
+            if (turn.externallyManaged && turn.input.messageId === outputId)
+                return turn;
+        }
+        return undefined;
+    }
+    /**
+     * 读侧投影:哪个索引已送达、哪些还要续投。
+     *
+     * 状态是桥接自己的事实(sent/pending/unknown),不是平台的"已读";
+     * unknown 不算可重试——没有确认的发出去可能已经到达,重复会变成两条消息。
+     */
+    outputView(outputId) {
+        const turn = this.outputTurn(outputId);
+        if (!turn)
+            return undefined;
+        const parts = turn.parts.map((part, index) => ({
+            index: part.outputIndex ?? index, text: part.text, state: part.state,
+            ...(part.platformId === undefined ? {} : { platformId: part.platformId }),
+            ...(part.error === undefined ? {} : { error: part.error }),
+        })).sort((left, right) => left.index - right.index);
+        const pending = parts.filter(part => part.state !== 'sent' && part.state !== 'unknown')
+            .map(part => part.index);
+        return {
+            output_id: outputId,
+            state: turn.state,
+            parts,
+            pending,
+            retryable: !turn.retired && pending.length > 0,
+        };
+    }
+    /** 所有仍可续投的输出(重启后按 outputId 续投用)。 */
+    pendingOutputs() {
+        return Object.values(this.turns)
+            .filter(turn => turn.externallyManaged && !turn.retired)
+            .flatMap(turn => {
+            const outputId = String(turn.input.messageId ?? '');
+            const view = this.outputView(outputId);
+            return view && view.pending.length > 0 ? [view] : [];
+        });
+    }
 }
