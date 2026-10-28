@@ -8,6 +8,7 @@ import type { MessageTargetId } from './onebot/types.js';
 import { InteractionCtxLike, QqInteractionBridge } from './interactions.js';
 import type { BridgeConfigRef } from './settings.js';
 import { QqBridgeEvents } from './bridge-events.js';
+import type { DshSegmentPolicy } from './handlers/dsh-executor.js';
 /** DSH live agent 最小画面。 */
 interface DshAgent {
     session: DshSessionSubject;
@@ -150,6 +151,23 @@ export declare function makeDshExecutor(ctx: DshCtx, agentCfg?: {
     models?: readonly string[];
     cwd?: string;
 }, interactions?: QqInteractionBridge, attachWorkspace?: (sessionId: string, cwd: string) => Promise<void>, llm?: () => DshLlmRuntime | undefined, commands?: () => DshCommandRuntime | undefined): DshAgentExecutor;
+/** 段判定端口的安装点;只需要这一个方法,便于测试注入假 executor。 */
+type SegmentPolicyTarget = {
+    setSegmentPolicy(policy: DshSegmentPolicy | undefined): void;
+};
+/**
+ * 取用记忆插件发布的段端口,并装到 executor 上。
+ *
+ * 方向与 `qqBridgeEvents` 相反:那边是桥接对外发布,这边是记忆插件发布、桥接取用。
+ * 两个插件由宿主按各自顺序启用,谁先谁后都不确定,所以不能只在启动时 get 一次 ——
+ * 与 llm/commands/storageDomain 一样用可选 fiber,端口换实现或消失时跟着重装/卸载。
+ *
+ * 服务缺失时什么都不做:executor 完全退回原行为(一个 QQ 来源一个会话)。
+ * 注意 module 级 `inject` 里**不能**加它 —— 那会变成硬依赖,并可能与 qqBridgeEvents 成环。
+ */
+export declare function createSegmentPolicyAccess(ctx: DshCtx, executor: SegmentPolicyTarget): {
+    dispose(): void;
+};
 export declare function attachSessionToWorkspace(registry: DshWorkspaceRegistry, sessionId: string, cwd: string): Promise<void>;
 /** Forward completed followups only for sessions bound by an admitted QQ input. */
 export declare function registerQqSessionOutput(ctx: Pick<DshCtx, 'on'>, executor: Pick<DshAgentExecutor, 'currentSessionId'>, bridge: QqBridgeEvents | undefined, handler: Pick<AgentRpcHandler, 'sendSessionOutput'>): () => void;

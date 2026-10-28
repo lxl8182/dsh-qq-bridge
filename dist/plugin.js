@@ -145,6 +145,7 @@ async function startQqBridge(ctx, cfg, events) {
     const storageDomainAccess = createDshStorageDomainAccess(ctx);
     const customMemoryStore = new LazyCustomMemoryStore(storageDomainAccess.current);
     const executor = makeDshExecutor(ctx, cfg.agent, interactions, workspaceAttachment.attach, llmAccess.current, commandsAccess.current);
+    const segmentPolicyAccess = createSegmentPolicyAccess(ctx, executor);
     const taskScheduler = new InMemoryTaskScheduler({
         executor,
         store: customMemoryStore,
@@ -304,6 +305,7 @@ async function startQqBridge(ctx, cfg, events) {
         commandsAccess.dispose();
         storageDomainAccess.dispose();
         workspaceAttachment.dispose();
+        segmentPolicyAccess.dispose();
         taskScheduler.dispose();
         recovery?.stop();
         await customMemoryStore.close();
@@ -688,6 +690,61 @@ function createDshStorageDomainAccess(ctx) {
             storageDomain = undefined;
             for (const dispose of disposers.splice(0))
                 dispose();
+        },
+    };
+}
+/**
+ * 读一次段端口。
+ *
+ * 优先用 `ctx.get`(不带 inject 前提的读法);宿主没有 `get` 时退回代理属性读。
+ * 代理读在「服务没提供」时会抛错(cordis 的 `cannot get property ... without inject`),
+ * 那只说明端口不存在,不是本次启用的失败原因 —— 所以这里吞掉并按未提供处理。
+ */
+function readSegmentPolicy(ctx) {
+    try {
+        const direct = ctx.get?.('companionSegmentPolicy');
+        if (direct)
+            return direct;
+    }
+    catch { /* treat as absent */ }
+    try {
+        return ctx.companionSegmentPolicy;
+    }
+    catch {
+        return undefined;
+    }
+}
+/**
+ * 取用记忆插件发布的段端口,并装到 executor 上。
+ *
+ * 方向与 `qqBridgeEvents` 相反:那边是桥接对外发布,这边是记忆插件发布、桥接取用。
+ * 两个插件由宿主按各自顺序启用,谁先谁后都不确定,所以不能只在启动时 get 一次 ——
+ * 与 llm/commands/storageDomain 一样用可选 fiber,端口换实现或消失时跟着重装/卸载。
+ *
+ * 服务缺失时什么都不做:executor 完全退回原行为(一个 QQ 来源一个会话)。
+ * 注意 module 级 `inject` 里**不能**加它 —— 那会变成硬依赖,并可能与 qqBridgeEvents 成环。
+ */
+export function createSegmentPolicyAccess(ctx, executor) {
+    const disposers = [];
+    if (ctx.inject) {
+        const fiber = ctx.inject(['companionSegmentPolicy'], (childCtx) => {
+            const scoped = childCtx;
+            executor.setSegmentPolicy(readSegmentPolicy(scoped));
+            // 端口消失(记忆插件卸载或被禁用)时卸载,executor 回到未接线行为。
+            scoped.effect?.(() => () => { executor.setSegmentPolicy(undefined); }, 'dsh-qq-bridge.segmentPolicy');
+        }, 'dsh-qq-bridge.segmentPolicy');
+        if (fiber && typeof fiber === 'object' && typeof fiber.dispose === 'function') {
+            disposers.push(() => fiber.dispose());
+        }
+    }
+    else {
+        executor.setSegmentPolicy(readSegmentPolicy(ctx));
+    }
+    return {
+        dispose() {
+            for (const dispose of disposers.splice(0))
+                dispose();
+            executor.setSegmentPolicy(undefined);
         },
     };
 }
