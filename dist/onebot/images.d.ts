@@ -22,6 +22,11 @@ export declare const DEFAULT_MAX_IMAGES = 4;
 export declare const DEFAULT_IMAGE_TIMEOUT_MS = 10000;
 /** 一张已经下载并编码好的入站图片。 */
 export interface InboundImage {
+    sourceIndex?: number;
+    attachment?: {
+        attachmentId: string;
+        [key: string]: unknown;
+    };
     /** 规范化后的媒体类型。 */
     mediaType: (typeof SUPPORTED_IMAGE_TYPES)[number];
     /** 标准 base64(无 data: 前缀)。 */
@@ -31,6 +36,7 @@ export interface InboundImage {
 }
 /** 从平台消息里抽出的图片地址;此时还没有下载。 */
 export interface ImageSource {
+    sourceIndex?: number;
     url: string;
     mediaType?: string;
     name?: string;

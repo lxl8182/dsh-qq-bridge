@@ -1,6 +1,8 @@
 import { parseQqControlBlocks, parseQqSpells, } from './control.js';
 import { DeliveryStore } from '../delivery-store.js';
 import { collectInboundImages } from '../onebot/images.js';
+import { imageStatusText } from '../onebot/message.js';
+import { replyParts } from '../message-format.js';
 /**
  * 历史配置字段 qqReplyStyleSkill 的默认 skill 名。
  *
@@ -12,28 +14,10 @@ export function sessionKeyOf(ctx) {
     return `${ctx.scope}:${ctx.scope === 'private' ? ctx.userId : ctx.groupId}`;
 }
 /**
- * 把文本按最大长度切分为多条,保证每条不超过 maxLen。
- * 优先在换行/标点附近切(保持可读),实在没有边界则硬切。
+ * 普通文字按自然换行分成气泡，结构块保持整体；超长再按 Unicode 码点拆分。
  */
 export function splitText(text, maxLen) {
-    if (maxLen <= 0 || text.length <= maxLen)
-        return text === '' ? [] : [text];
-    const parts = [];
-    let rest = text;
-    while (rest.length > maxLen) {
-        // 在 maxLen-1 往前找最近的换行或标点作为切点(留一位容纳标点)
-        const searchTo = maxLen - 1;
-        let cut = rest.lastIndexOf('\n', searchTo);
-        if (cut <= 0)
-            cut = Math.max(rest.lastIndexOf('。', searchTo), rest.lastIndexOf('！', searchTo), rest.lastIndexOf('？', searchTo), rest.lastIndexOf('.', searchTo), rest.lastIndexOf('，', searchTo), rest.lastIndexOf(',', searchTo));
-        if (cut <= 0)
-            cut = searchTo; // 无边界,硬切(maxLen-1,保证 <= maxLen)
-        parts.push(rest.slice(0, cut + 1).trimStart());
-        rest = rest.slice(cut + 1);
-    }
-    if (rest.trim())
-        parts.push(rest.trimStart());
-    return parts.filter((p) => p.length > 0);
+    return replyParts(text, maxLen).parts;
 }
 /**
  * A 内置 handler:QQ 消息 → 遥控 DSH Agent → 回发。
@@ -46,13 +30,55 @@ export class AgentRpcHandler {
     active = new WeakMap();
     queues = new Map();
     stopped = false;
+    delays = new Map();
     constructor(executor, opts = {}) {
         this.executor = executor;
         this.opts = opts;
         this.delivery = new DeliveryStore(opts.deliveryStatePath);
     }
     async open() { await this.delivery.open(); }
-    async dispose() { this.stopped = true; await this.delivery.save(); }
+    async dispose() {
+        this.stopped = true;
+        for (const delay of this.delays.values())
+            delay.abort();
+        await this.delivery.save();
+    }
+    async waitBetween(ctx, text) {
+        const key = sessionKeyOf(ctx), controller = new AbortController();
+        this.delays.set(key, controller);
+        const milliseconds = Math.min(2000, 800 + Array.from(text).length * 15);
+        try {
+            if (this.opts.waitForBubble)
+                await this.opts.waitForBubble(milliseconds, controller.signal);
+            else
+                await new Promise(resolve => {
+                    const done = () => { clearTimeout(timer); controller.signal.removeEventListener('abort', done); resolve(); };
+                    const timer = setTimeout(done, milliseconds);
+                    controller.signal.addEventListener('abort', done, { once: true });
+                });
+        }
+        finally {
+            if (this.delays.get(key) === controller)
+                this.delays.delete(key);
+        }
+    }
+    async sendPending(ctx, parts, canSend = async () => true) {
+        for (let index = 0; index < parts.length; index++) {
+            const part = parts[index];
+            if (part.state === 'sent')
+                continue;
+            if (part.state !== 'pending')
+                return false;
+            if (index > 0 && !this.stopped)
+                await this.waitBetween(ctx, part.text);
+            if (this.stopped || !await canSend())
+                return false;
+            await this.sendPart(ctx, part);
+            if (part.state !== 'sent')
+                return false;
+        }
+        return true;
+    }
     completedReports() {
         return Object.values(this.delivery.turns).flatMap(turn => turn.report ? [turn.report] : []);
     }
@@ -101,10 +127,14 @@ export class AgentRpcHandler {
                 if (turn.state === 'waiting')
                     await this.process(ctx, turn);
                 else if (turn.state === 'output') {
-                    for (const part of turn.parts)
-                        if (part.state === 'pending')
-                            await this.sendPart(ctx, part);
-                    await this.finishDelivery(turn);
+                    this.active.set(ctx, turn);
+                    try {
+                        await this.sendPending(ctx, turn.parts);
+                        await this.finishDelivery(turn);
+                    }
+                    finally {
+                        this.active.delete(ctx);
+                    }
                 }
             });
         }
@@ -135,14 +165,12 @@ export class AgentRpcHandler {
             this.active.set(ctx, turn);
             try {
                 let cancelled = false;
-                for (const part of turn.parts)
-                    if (part.state === 'pending') {
-                        if (!await canSend()) {
-                            cancelled = true;
-                            break;
-                        }
-                        await this.sendPart(ctx, part);
-                    }
+                await this.sendPending(ctx, turn.parts, async () => {
+                    const allowed = await canSend();
+                    if (!allowed)
+                        cancelled = true;
+                    return allowed;
+                });
                 await this.finishDelivery(turn);
                 result = {
                     status: cancelled ? 'cancelled' : turn.state === 'complete' ? 'completed' : 'failed',
@@ -172,7 +200,7 @@ export class AgentRpcHandler {
         await this.enqueue(input.sessionKey, async () => {
             if (this.stopped || this.opts.sessionIdOf?.(input.sessionKey) !== input.sessionId)
                 return;
-            const visible = parseQqControlBlocks(parseQqSpells(result).visibleText).visibleText;
+            const visible = replyParts(parseQqControlBlocks(parseQqSpells(result).visibleText).visibleText).text;
             const parts = splitText(visible, this.opts.maxMessageLength ?? 4500)
                 .map(text => ({ text, kind: 'reply', state: 'pending' }));
             // The first persisted state already contains the output. A crash must
@@ -183,8 +211,7 @@ export class AgentRpcHandler {
             this.active.set(ctx, turn);
             try {
                 // No user-turn report: feedback is not a new statement by the user.
-                for (const part of turn.parts)
-                    await this.sendPart(ctx, part);
+                await this.sendPending(ctx, turn.parts);
                 await this.finishDelivery(turn);
             }
             finally {
@@ -238,58 +265,33 @@ export class AgentRpcHandler {
     }
     /** 把一段文本按 maxLen 切分后逐条回发,并带回每段的平台回执。 */
     async respondChunk(ctx, chunk, kind = 'control') {
-        const maxLen = this.opts.maxMessageLength ?? 4500;
-        const parts = splitText(chunk, maxLen);
-        const sent = [];
+        const plan = replyParts(chunk, this.opts.maxMessageLength ?? 4500, kind === 'reply');
+        const staged = plan.parts.map(text => ({ text, kind, state: 'pending' }));
         const turn = this.active.get(ctx);
         if (turn) {
-            const staged = parts.map(text => ({ text, kind, state: 'pending' }));
             turn.parts.push(...staged);
             await this.delivery.save();
-            for (const part of staged) {
-                await this.sendPart(ctx, part);
-                sent.push({ index: sent.length, chars: Array.from(part.text).length, ok: part.state === 'sent',
-                    ...(part.platformId === undefined ? {} : { platformId: part.platformId }),
-                    ...(part.error === undefined ? {} : { error: part.error }) });
-            }
-            return sent;
         }
-        for (const part of parts) {
-            const index = sent.length;
-            try {
-                const receipt = ctx.send ? await ctx.send(part) : (await ctx.respond(part), {});
-                sent.push({
-                    index,
-                    chars: Array.from(part).length,
-                    ...(receipt && typeof receipt === 'object' && receipt.platformId !== undefined
-                        ? { platformId: String(receipt.platformId) } : {}),
-                    ok: true,
-                });
-            }
-            catch (err) {
-                // Keep the remaining parts unsent: a split reply that failed midway is
-                // retried from the failed segment, never resent in full.
-                sent.push({
-                    index,
-                    chars: Array.from(part).length,
-                    ok: false,
-                    error: err instanceof Error ? err.message : String(err),
-                });
-            }
-        }
-        return sent;
+        await this.sendPending(ctx, staged);
+        return staged.map((part, index) => ({ index, chars: Array.from(part.text).length, ok: part.state === 'sent',
+            ...(part.platformId === undefined ? {} : { platformId: part.platformId }),
+            ...(part.error === undefined ? {} : { error: part.error }) }));
     }
     async run(ctx) {
         if (this.stopped)
             return;
-        if (!this.opts.deliveryStatePath)
-            return this.process(ctx);
-        await this.enqueue(sessionKeyOf(ctx), async () => {
+        const sessionKey = sessionKeyOf(ctx);
+        if (!this.opts.deliveryStatePath) {
+            await this.opts.waitForOutput?.(sessionKey);
+            return this.enqueue(sessionKey, () => this.process(ctx));
+        }
+        await (async () => {
             const { turn, duplicate } = await this.delivery.accept(ctx);
             if (duplicate)
                 return;
-            await this.process(ctx, turn);
-        }).catch(async (error) => {
+            await this.opts.waitForOutput?.(sessionKey);
+            await this.enqueue(sessionKey, () => this.process(ctx, turn));
+        })().catch(async (error) => {
             const full = String(error?.message).includes('队列已满');
             console.warn(`[dsh-qq-bridge] delivery state failed: ${error instanceof Error ? error.message : String(error)}`);
             await ctx.respond(full ? 'QQ 待处理队列已满，本条尚未受理，请稍后重发。'
@@ -347,16 +349,19 @@ export class AgentRpcHandler {
     async runAgentTurn(ctx, sessionKey, payload) {
         // 图片在这里才下载:确认本轮真要交给 Agent 之后,而不是在路由分流时。
         // 失败只记录,不改变文本轮次的任何行为。
-        const images = await this.collectImages(ctx);
+        let images = await this.collectImages(ctx);
         const ackMessage = this.opts.ackMessage ?? '收到，正在处理...';
         const timeoutMs = this.opts.timeoutMs;
         const timeoutMessage = this.opts.timeoutMessage ?? 'agent 无响应，请稍后重试。';
-        let active = true;
         try {
+            images = this.executor.prepareImages ? await this.executor.prepareImages(images) : images;
+            ctx.payload = imageStatusText(ctx.payload, ctx.images ?? [], images);
+            payload = ctx.payload;
             const sessionId = await this.executor.prepareSession?.(sessionKey);
             const stored = this.active.get(ctx);
             if (stored) {
                 stored.sessionId = sessionId;
+                stored.input.payload = payload;
                 await this.delivery.save();
             }
             await this.opts.prepareTurn?.({ sessionKey, sessionId, scope: ctx.scope, owner: ctx.owner,
@@ -369,20 +374,18 @@ export class AgentRpcHandler {
             }
             if (ackMessage)
                 await this.respondChunk(ctx, ackMessage);
-            const canStreamText = this.opts.streamText && !this.opts.controlDispatcher && !this.opts.deliveryStatePath;
-            if (!canStreamText) {
+            {
                 // AgentExecutor.run resolve 即本轮完成标志:DSH executor 在内部等待 agent.whenIdle()。
                 // 没有图片时保持两参调用:既有实现与测试都按这个形状断言。
                 const result = await withTimeout(images.length === 0
                     ? this.executor.run(sessionKey, payload)
                     : this.executor.run(sessionKey, payload, undefined, images), timeoutMs);
-                active = false;
                 if (this.stopped || stored?.retired)
                     return;
                 if (stored) {
                     stored.state = 'output';
                     const visible = parseQqSpells(result || '').visibleText;
-                    stored.report = this.turnReport(ctx, sessionKey, this.opts.controlDispatcher ? parseQqControlBlocks(visible).visibleText : visible, [], { status: 'completed', generationStatus: 'completed' });
+                    stored.report = this.turnReport(ctx, sessionKey, replyParts(this.opts.controlDispatcher ? parseQqControlBlocks(visible).visibleText : visible).text, [], { status: 'completed', generationStatus: 'completed' });
                     await this.delivery.save();
                 }
                 const output = await this.respondAgentOutput(ctx, sessionKey, result || '(no output)');
@@ -392,39 +395,8 @@ export class AgentRpcHandler {
                     this.observeTurn(ctx, sessionKey, payload, output.reply, output.parts, { status: output.status, generationStatus: 'completed' });
                 return;
             }
-            const streamedText = [];
-            const parts = [];
-            // 分段返回:agent 边产出边回发,用户不必等整轮结束。
-            // 默认只回发「思考结果」(kind='text');思考过程(reasoning)默认忽略,
-            // 避免逐 token 的思考增量在聊天框刷屏。可用 streamReasoning 开启。
-            const onChunk = (chunk, kind) => {
-                if (!active)
-                    return;
-                if (kind === 'reasoning' && !this.opts.streamReasoning)
-                    return;
-                if (kind === 'text')
-                    streamedText.push(chunk);
-                void this.respondChunk(ctx, chunk).then(sent => {
-                    for (const part of sent)
-                        parts.push({ ...part, index: parts.length });
-                });
-            };
-            const result = await withTimeout(images.length === 0
-                ? this.executor.run(sessionKey, payload, onChunk)
-                : this.executor.run(sessionKey, payload, onChunk, images), timeoutMs);
-            active = false;
-            const final = result || '(no output)';
-            // 若流式 text 分段已经覆盖最终结果,不再重复发送最终完整版。
-            if (streamedText.join('').trim() === final.trim()) {
-                this.observeTurn(ctx, sessionKey, payload, final, parts, { status: 'completed' });
-                return;
-            }
-            // 最终结果(若与已分段内容不同,回发最终完整版作为收尾;超长自动拆分)。
-            const tail = await this.respondAgentOutput(ctx, sessionKey, final, { report: ctx, remember: false, offset: parts.length });
-            this.observeTurn(ctx, sessionKey, payload, tail.reply || final, [...parts, ...tail.parts], { status: tail.status });
         }
         catch (err) {
-            active = false;
             const stored = this.active.get(ctx);
             if (this.stopped || stored?.retired)
                 return;
@@ -489,10 +461,11 @@ export class AgentRpcHandler {
         // 拆完仍是纯文本,所以下面有没有控制块分发器都能走同一条路。
         const spelled = parseQqSpells(result);
         if (!dispatcher) {
-            const parts = await this.respondChunk(ctx, spelled.visibleText, 'reply');
+            const visible = replyParts(spelled.visibleText).text;
+            const parts = await this.respondChunk(ctx, visible, 'reply');
             const offset = options.offset ?? 0;
             return {
-                reply: spelled.visibleText,
+                reply: visible,
                 parts: parts.map(part => ({ ...part, index: part.index + offset })),
                 status: parts.every(part => part.ok) ? 'completed' : 'failed',
             };
@@ -519,10 +492,11 @@ export class AgentRpcHandler {
         }
         let reply = '';
         if (parsed.visibleText) {
-            const sent = await this.respondChunk(ctx, parsed.visibleText, 'reply');
+            const visible = replyParts(parsed.visibleText).text;
+            const sent = await this.respondChunk(ctx, visible, 'reply');
             for (const part of sent)
                 parts.push({ ...part, index: offset + parts.length });
-            reply = parsed.visibleText;
+            reply = visible;
         }
         else if (parts.length === 0) {
             const sent = await this.respondChunk(ctx, '(no output)');

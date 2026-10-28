@@ -1,6 +1,6 @@
 import type { HandlerContext } from './router.js';
 import type { QqTurnReport } from './handlers/agent.js';
-export type SavedInput = Pick<HandlerContext, 'scope' | 'userId' | 'groupId' | 'owner' | 'messageId' | 'payload' | 'replyTarget'>;
+export type SavedInput = Pick<HandlerContext, 'scope' | 'userId' | 'groupId' | 'owner' | 'messageId' | 'payload' | 'replyTarget' | 'images'>;
 export interface DeliveryPart {
     outputIndex?: number;
     text: string;
@@ -27,6 +27,7 @@ export declare class DeliveryStore {
     readonly turns: Record<string, DeliveryTurn>;
     private tail;
     constructor(path?: string | undefined);
+    private inputKey;
     open(): Promise<void>;
     save(): Promise<void>;
     accept(ctx: HandlerContext, output?: {

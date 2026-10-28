@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { MessageRouter } from './router.js';
 import { AccessGate } from './security.js';
 import { AgentRpcHandler } from './handlers/agent.js';
-import { DshAgentExecutor, eventsForTurn, extractLastAssistantText, isUnexecutedDsmlToolCall } from './handlers/dsh-executor.js';
+import { DshAgentExecutor, eventsForTurn, extractAssistantText, isUnexecutedDsmlToolCall } from './handlers/dsh-executor.js';
 import { DIR_COMMAND, resolveUserPath } from './handlers/directory.js';
 import { createSetCwdControlHandler, createNewSessionControlHandler, createSetModelControlHandler, createSetPermissionControlHandler, createSetReasoningEffortControlHandler, QqControlDispatcher, } from './handlers/control.js';
 import { createSaveMemoControlHandler, LazyCustomMemoryStore } from './handlers/custom-memory.js';
@@ -101,6 +101,7 @@ function createBridgeRuntime(ctx, events) {
     };
 }
 async function startQqBridge(ctx, cfg, events) {
+    events?.setOutputLimit(cfg.agent.maxMessageLength);
     assertPlatformConfig(cfg);
     const officialMode = cfg.platform === 'official';
     if (events)
@@ -182,8 +183,11 @@ async function startQqBridge(ctx, cfg, events) {
                 send: text => outboundWithReceipt(input.scope, target, text, input.replyTarget) };
         },
         prepareTurn: input => events?.prepare(input) ?? Promise.resolve(),
-        streamText: cfg.agent.streamText,
-        streamReasoning: cfg.agent.streamReasoning,
+        waitForOutput: async (sessionKey) => {
+            const sessionId = executor.currentSessionId(sessionKey);
+            if (sessionId)
+                await events?.waitForOutput(sessionId);
+        },
         maxMessageLength: cfg.agent.maxMessageLength,
         ackMessage: cfg.agent.ackMessage,
         timeoutMs: cfg.agent.timeoutMs,
@@ -512,6 +516,15 @@ function wireDsh(ctx, agentCfg, interactions, attachWorkspace) {
             unsubscribe?.();
             return { messageId: msg.id };
         },
+        async prepareImages(images) {
+            const admitted = [];
+            for (const image of images) {
+                const attachment = await saveInboundImage(ctx, image);
+                if (attachment)
+                    admitted.push({ ...image, attachment });
+            }
+            return admitted;
+        },
         async readSurface(sessionId) {
             if (!query)
                 return [];
@@ -754,7 +767,7 @@ async function buildDshUserContent(ctx, text, images) {
     if (text.length > 0)
         content.push({ type: 'text', text });
     for (const image of images ?? []) {
-        const attachment = await saveInboundImage(ctx, image);
+        const attachment = image.attachment ?? await saveInboundImage(ctx, image);
         if (!attachment)
             continue;
         content.push({ type: 'image', attachment });
@@ -834,7 +847,7 @@ export function registerQqSessionOutput(ctx, executor, bridge, handler) {
             return input.type === 'user/message' && ['user', 'companion-proactive'].includes((input.data?.message ?? input.data)?.source?.kind ?? '');
         }))
             return;
-        const text = extractLastAssistantText(turn);
+        const text = extractAssistantText(turn);
         if (!text || isUnexecutedDsmlToolCall(text))
             return;
         void handler.sendSessionOutput(binding, event.data.turn, text).catch(error => {

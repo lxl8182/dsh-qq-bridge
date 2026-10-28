@@ -29,6 +29,8 @@ export const DEFAULT_IMAGE_TIMEOUT_MS = 10_000
 
 /** 一张已经下载并编码好的入站图片。 */
 export interface InboundImage {
+  sourceIndex?: number
+  attachment?: { attachmentId: string; [key: string]: unknown }
   /** 规范化后的媒体类型。 */
   mediaType: (typeof SUPPORTED_IMAGE_TYPES)[number]
   /** 标准 base64(无 data: 前缀)。 */
@@ -39,6 +41,7 @@ export interface InboundImage {
 
 /** 从平台消息里抽出的图片地址;此时还没有下载。 */
 export interface ImageSource {
+  sourceIndex?: number
   url: string
   mediaType?: string
   name?: string
@@ -153,6 +156,7 @@ export async function fetchInboundImage(
     if (buffer.byteLength > maxBytes) return { skipped: `too large (${buffer.byteLength} bytes)` }
     return {
       image: {
+        ...(source.sourceIndex === undefined ? {} : { sourceIndex: source.sourceIndex }),
         mediaType,
         data: buffer.toString('base64'),
         ...(source.name === undefined ? {} : { name: source.name }),

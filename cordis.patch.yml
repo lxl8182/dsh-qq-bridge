@@ -20,7 +20,6 @@
           provider: deepseek-official
           model: deepseek-v4-flash
           cwd: "~"
-          streamReasoning: false
           maxMessageLength: 4500
           ackMessage: 收到，正在处理...
           qqReplyStyleSkill:

@@ -285,15 +285,7 @@ window.__ModuleLoader__.load({
             textField("默认工作目录", draft.agent.cwd, disabled, (value) => update(["agent", "cwd"], value)),
             readonlyField("超时", "不限制"),
           ),
-          h("label", { style: styles.checkbox },
-            h("input", {
-              type: "checkbox",
-              checked: draft.agent.streamText,
-              disabled,
-              onChange: (event) => update(["agent", "streamText"], event.currentTarget.checked),
-            }),
-            h("span", null, "边生成边回发文本"),
-          ),
+          h("p", { style: styles.subtle }, "回复完成后按自然换行连发；代码与清单保持完整，推理过程不会发送。"),
           h("h4", { style: styles.sectionTitle }, "安全与权限"),
           h("div", { style: styles.grid },
             selectField("访问模式", draft.access.mode, ["whitelist", "open"], disabled, (value) => update(["access", "mode"], value)),
@@ -761,7 +753,6 @@ window.__ModuleLoader__.load({
           provider: source.agent?.provider ?? "deepseek-official",
           model: source.agent?.model ?? "deepseek-v4-flash",
           cwd: displayCwd(source.agent?.cwd, homeDir),
-          streamText: Boolean(source.agent?.streamText),
         },
         selfLogInput: {
           enabled: Boolean(source.selfLogInput?.enabled),
@@ -792,7 +783,7 @@ window.__ModuleLoader__.load({
 
     function generalOpsFromDraft(draft) {
       return [
-        ...["provider", "model", "cwd", "streamText"].map((key) => set(["agent", key], draft.agent[key])),
+        ...["provider", "model", "cwd"].map((key) => set(["agent", key], draft.agent[key])),
         set(["access", "mode"], draft.access.mode),
         set(["permissionDefault"], draft.permissionDefault),
         set(["notifications", "agentReply", "enabled"], draft.notifications.agentReplyEnabled),
@@ -830,8 +821,6 @@ window.__ModuleLoader__.load({
           provider: draft.agent.provider,
           model: draft.agent.model,
           cwd: draft.agent.cwd,
-          streamText: draft.agent.streamText,
-          streamReasoning: false,
           maxMessageLength: 4500,
           ackMessage: "收到，正在处理...",
           qqReplyStyleSkill: { enabled: true, skillName: "qq-session-reply-style" },

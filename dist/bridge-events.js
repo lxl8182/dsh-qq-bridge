@@ -1,4 +1,6 @@
 import { parseQqControlBlocks, parseQqSpells } from './handlers/control.js';
+import { extractAssistantText } from './handlers/dsh-executor.js';
+import { replyParts } from './message-format.js';
 /** 服务在 Cordis 中的名字;订阅方按这个名字注入。 */
 export const QQ_BRIDGE_EVENTS_SERVICE = 'qqBridgeEvents';
 /**
@@ -16,13 +18,39 @@ export class QqBridgeEvents {
     platform = 'official';
     replay;
     outputSender;
+    maxMessageLength = 4500;
+    activeOutputs = new Map();
+    beginOutput(sessionId) {
+        if (this.activeOutputs.has(sessionId))
+            throw new Error('QQ session already has an active output');
+        let finish;
+        const promise = new Promise(resolve => { finish = resolve; });
+        const output = { promise, finish };
+        this.activeOutputs.set(sessionId, output);
+        return () => {
+            if (this.activeOutputs.get(sessionId) === output)
+                this.activeOutputs.delete(sessionId);
+            finish();
+        };
+    }
+    async waitForOutput(sessionId) {
+        await this.activeOutputs.get(sessionId)?.promise;
+    }
+    setOutputLimit(maximum) { this.maxMessageLength = maximum; }
     setOutputSender(sender) {
         this.outputSender = sender;
         return () => { if (this.outputSender === sender)
             this.outputSender = undefined; };
     }
     normalizeOutput(text) {
-        return parseQqControlBlocks(parseQqSpells(text).visibleText).visibleText;
+        return replyParts(parseQqControlBlocks(parseQqSpells(text).visibleText).visibleText).text;
+    }
+    planOutput(text) {
+        const plan = replyParts(this.normalizeOutput(text), this.maxMessageLength);
+        return { text: plan.text, part_sizes: plan.part_sizes };
+    }
+    assistantText(events) {
+        return extractAssistantText(events) ?? '';
     }
     deliverOutput(sessionId, outputId, parts, canSend) {
         return this.outputSender?.(sessionId, outputId, parts, canSend);
@@ -106,6 +134,9 @@ export class QqBridgeEvents {
     }
     /** 卸载时清空订阅,避免已销毁的服务继续持有回调。 */
     dispose() {
+        for (const output of this.activeOutputs.values())
+            output.finish();
+        this.activeOutputs.clear();
         this.listeners.clear();
         this.admissions.clear();
         this.bindings.clear();

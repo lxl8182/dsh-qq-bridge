@@ -1,6 +1,7 @@
 import { MessageTargetId, OnebotMessageEvent, PlatformReplyTarget } from './onebot/types.js'
 import { AccessGate } from './security.js'
-import { imageSourcesFromOnebotSegments, type ImageSource } from './onebot/images.js'
+import { type ImageSource } from './onebot/images.js'
+import { normalizeInboundMessage } from './onebot/message.js'
 
 /**
  * handler 上下文:暴露来源信息与便捷回发能力。
@@ -99,7 +100,8 @@ export class MessageRouter {
     if (!this.gate.allow(evt)) return false
 
     const scope: 'private' | 'group' = evt.message_type === 'private' ? 'private' : 'group'
-    const payload = this.gate.stripPrefix(evt.raw_message)
+    const normalized = normalizeInboundMessage(evt.raw_message, evt.message)
+    const payload = this.gate.stripPrefix(normalized.text)
     if (payload === null) return false
 
     const targetId = scope === 'private' ? evt.user_id : evt.group_id!
@@ -116,7 +118,7 @@ export class MessageRouter {
     }
 
     // 图片只登记地址,不在这里下载:命令 handler 与白名单失败都不该触发网络请求。
-    const imageSources = imageSourcesFromOnebotSegments(evt.message)
+    const imageSources = normalized.images
     const ctx: HandlerContext = {
       userId: evt.user_id,
       scope,

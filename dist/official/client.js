@@ -92,7 +92,7 @@ export function toBridgeMessageEvent(msg) {
     if (scope === null)
         return null;
     const groupId = scope === 'group' ? msg.replyTarget.targetId : undefined;
-    const segments = officialAttachmentSegments(msg.attachments);
+    const segments = [{ type: 'text', data: { text: msg.content } }, ...officialAttachmentSegments(msg.attachments)];
     return {
         post_type: 'message',
         message_type: scope,

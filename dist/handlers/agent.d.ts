@@ -18,8 +18,7 @@ export interface QqReplyStyleSkillOptions {
 }
 export declare function sessionKeyOf(ctx: Pick<HandlerContext, 'scope' | 'userId' | 'groupId'>): string;
 /**
- * 把文本按最大长度切分为多条,保证每条不超过 maxLen。
- * 优先在换行/标点附近切(保持可读),实在没有边界则硬切。
+ * 普通文字按自然换行分成气泡，结构块保持整体；超长再按 Unicode 码点拆分。
  */
 export declare function splitText(text: string, maxLen: number): string[];
 /**
@@ -28,6 +27,7 @@ export declare function splitText(text: string, maxLen: number): string[];
  * 测试时可注入一个假执行器,无需真实 DSH。
  */
 export interface AgentExecutor {
+    prepareImages?(images: readonly InboundImage[]): Promise<InboundImage[]>;
     prepareSession?(sessionKey: string): Promise<string>;
     /**
      * 把 payload 交给一个 DSH Agent 会话处理,返回最终文本。
@@ -109,10 +109,8 @@ export declare class AgentRpcHandler implements Handler {
     private readonly active;
     private readonly queues;
     private stopped;
+    private delays;
     constructor(executor: AgentExecutor, opts?: {
-        streamReasoning?: boolean;
-        /** 是否边生成边回发 text 分段;默认 false,等待 agent 本轮完成后只发送最终回复。 */
-        streamText?: boolean;
         /** 单条 QQ 消息最大长度;超长自动拆分为多条发送。 */
         maxMessageLength?: number;
         /** 收到有效指令后立即回发的确认消息;设为空字符串可关闭。 */
@@ -149,11 +147,16 @@ export declare class AgentRpcHandler implements Handler {
         /** 一轮真实结束后报告对外事实;不含思考过程、工具日志或内部提示。 */
         observeTurn?: AgentTurnObserver;
         prepareTurn?: (input: QqTurnInput) => Promise<void>;
+        waitForOutput?: (sessionKey: string) => Promise<void>;
         deliveryStatePath?: string;
         restoreContext?: (input: SavedInput) => HandlerContext | undefined;
+        /** 定向测试可替换时钟；生产按气泡长度安排 0.8—2 秒间隔。 */
+        waitForBubble?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
     });
     open(): Promise<void>;
     dispose(): Promise<void>;
+    private waitBetween;
+    private sendPending;
     completedReports(): QqTurnReport[];
     retireSession(sessionId: string): Promise<void>;
     private enqueue;

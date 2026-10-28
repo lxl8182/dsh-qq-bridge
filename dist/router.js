@@ -1,4 +1,4 @@
-import { imageSourcesFromOnebotSegments } from './onebot/images.js';
+import { normalizeInboundMessage } from './onebot/message.js';
 /**
  * C 骨架:消息分发器。注册 handler,按前缀 + 匹配路由。
  */
@@ -34,7 +34,8 @@ export class MessageRouter {
         if (!this.gate.allow(evt))
             return false;
         const scope = evt.message_type === 'private' ? 'private' : 'group';
-        const payload = this.gate.stripPrefix(evt.raw_message);
+        const normalized = normalizeInboundMessage(evt.raw_message, evt.message);
+        const payload = this.gate.stripPrefix(normalized.text);
         if (payload === null)
             return false;
         const targetId = scope === 'private' ? evt.user_id : evt.group_id;
@@ -47,7 +48,7 @@ export class MessageRouter {
             }
         };
         // 图片只登记地址,不在这里下载:命令 handler 与白名单失败都不该触发网络请求。
-        const imageSources = imageSourcesFromOnebotSegments(evt.message);
+        const imageSources = normalized.images;
         const ctx = {
             userId: evt.user_id,
             scope,

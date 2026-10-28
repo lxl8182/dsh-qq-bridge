@@ -10,6 +10,10 @@ export class DeliveryStore {
     constructor(path) {
         this.path = path;
     }
+    inputKey(ctx) {
+        return ctx.messageId === undefined ? randomUUID() : createHash('sha256')
+            .update(JSON.stringify([ctx.scope, ctx.userId, ctx.groupId, ctx.messageId])).digest('hex');
+    }
     async open() {
         if (!this.path)
             return;
@@ -50,11 +54,10 @@ export class DeliveryStore {
         return next;
     }
     async accept(ctx, output) {
-        const key = ctx.messageId === undefined ? randomUUID() : createHash('sha256')
-            .update(JSON.stringify([ctx.scope, ctx.userId, ctx.groupId, ctx.messageId])).digest('hex');
+        const key = this.inputKey(ctx);
         if (this.turns[key])
             return { turn: this.turns[key], duplicate: true };
-        if (Object.values(this.turns).filter(turn => turn.state !== 'complete' && turn.state !== 'failed').length >= 256) {
+        if (Object.values(this.turns).filter(turn => !['complete', 'failed'].includes(turn.state)).length >= 256) {
             throw new Error('QQ 待处理队列已满，请恢复连接后重试');
         }
         const input = {
@@ -62,6 +65,7 @@ export class DeliveryStore {
             ...(ctx.groupId === undefined ? {} : { groupId: ctx.groupId }),
             ...(ctx.messageId === undefined ? {} : { messageId: ctx.messageId }),
             ...(ctx.replyTarget === undefined ? {} : { replyTarget: ctx.replyTarget }),
+            ...(ctx.images === undefined ? {} : { images: ctx.images }),
         };
         const turn = { id: key, input,
             state: output ? 'output' : 'waiting', parts: output?.parts ?? [],
@@ -69,7 +73,7 @@ export class DeliveryStore {
             ...(output?.externallyManaged ? { externallyManaged: true } : {}),
         };
         this.turns[key] = turn;
-        const complete = Object.values(this.turns).filter(row => row.state === 'complete' || row.state === 'failed');
+        const complete = Object.values(this.turns).filter(row => ['complete', 'failed'].includes(row.state));
         for (const row of complete.slice(0, Math.max(0, complete.length - 512)))
             delete this.turns[row.id];
         await this.save();

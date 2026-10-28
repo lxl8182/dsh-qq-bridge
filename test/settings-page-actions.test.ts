@@ -105,7 +105,7 @@ describe('settings page actions', () => {
     expect(helpers.configurationError(draft)).toContain('AppID')
     const ops = helpers.generalOpsFromDraft(draft)
     expect(ops.map((op: any) => op.path.join('.'))).toEqual([
-      'agent.provider', 'agent.model', 'agent.cwd', 'agent.streamText',
+      'agent.provider', 'agent.model', 'agent.cwd',
       'access.mode', 'permissionDefault', 'notifications.agentReply.enabled',
     ])
     expect(JSON.stringify(ops)).not.toContain('unsaved')

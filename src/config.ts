@@ -57,10 +57,6 @@ const DshQqBridgeConfig = z.object({
       models: z.array(z.string()).default([]),
       /** QQ Agent 默认工作目录;支持 ~ 表示当前用户 home。 */
       cwd: z.string().default('~'),
-      /** 是否边生成边回发 text 分段。默认 false:等待本轮完成后只回发最终回复。 */
-      streamText: z.boolean().default(false),
-      /** streamText=true 时,是否把思考过程(reasoning)也分段回发。默认 false。 */
-      streamReasoning: z.boolean().default(false),
       /** 单条 QQ 消息最大长度(字符数);超长自动拆分为多条发送。QQ 官方单条约 5000 字,默认留余量。 */
       maxMessageLength: z.number().int().positive().default(4500),
       /** 收到有效 QQ 指令后立即回发的确认消息;设为空字符串可关闭。 */

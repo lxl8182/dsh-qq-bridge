@@ -133,7 +133,7 @@ describe('dsh-qq-bridge — MessageRouter + AccessGate', () => {
     router.register(new AgentRpcHandler(executor, { webActivityGate }))
 
     const routing = router.route(makeEvent({ user_id: 10001, raw_message: '/dsh hello' }))
-    await Promise.resolve()
+    await vi.waitFor(() => expect(sent).toEqual(['当前 Web 会话正在运行，请稍后...']))
 
     expect(executor.run).not.toHaveBeenCalled()
     expect(sent).toEqual(['当前 Web 会话正在运行，请稍后...'])
@@ -148,7 +148,7 @@ describe('dsh-qq-bridge — MessageRouter + AccessGate', () => {
     expect(sent).toEqual(['当前 Web 会话正在运行，请稍后...', '收到，正在处理...', 'echo:hello'])
   })
 
-  it('Web busy 期间多条 QQ agent 消息按 FIFO 顺序推进', async () => {
+  it('Web busy 期间输入按 FIFO 推进，每轮回复都完整发出', async () => {
     const gate = new AccessGate({ adminQq: 10001, allowlist: [], commandPrefix: '/dsh', mode: 'whitelist' })
     const webActivityGate = new DshWebActivityGate()
     webActivityGate.observe({ id: 'web-session-1' }, { type: 'turn/start', data: { turn: 1 } })
@@ -168,10 +168,7 @@ describe('dsh-qq-bridge — MessageRouter + AccessGate', () => {
     await Promise.resolve()
 
     expect(calls).toEqual([])
-    expect(sent).toEqual([
-      '当前 Web 会话正在运行，请稍后...',
-      '当前 Web 会话正在运行，请稍后...',
-    ])
+    expect(sent).toEqual([])
 
     webActivityGate.observe({ id: 'web-session-1' }, {
       type: 'turn/end',
@@ -180,12 +177,7 @@ describe('dsh-qq-bridge — MessageRouter + AccessGate', () => {
     await Promise.all([first, second])
 
     expect(calls).toEqual(['first', 'second'])
-    expect(sent).toEqual([
-      '当前 Web 会话正在运行，请稍后...',
-      '当前 Web 会话正在运行，请稍后...',
-      'r:first',
-      'r:second',
-    ])
+    expect(sent).toEqual(['r:first', 'r:second'])
   })
 
   it('QQ-backed session running does not block QQ agent messages as Web busy', async () => {
@@ -478,7 +470,7 @@ describe('dsh-qq-bridge — MessageRouter + AccessGate', () => {
     expect(sent).toEqual(['收到，正在处理...', '最终完整结果'])
   })
 
-  it('streamText=true 时分段回发,且 streamReasoning 控制思考过程', async () => {
+  it('完整回复形成后投递，推理过程不会发到 QQ', async () => {
     const gate = new AccessGate({ adminQq: 10001, allowlist: [], commandPrefix: '/dsh', mode: 'whitelist' })
 
     const sent: string[] = []
@@ -490,11 +482,11 @@ describe('dsh-qq-bridge — MessageRouter + AccessGate', () => {
       }),
     }
     const routerDefault = new MessageRouter(gate, async (_, __, text) => void sent.push(text))
-    routerDefault.register(new AgentRpcHandler(execDefault as never, { streamText: true }))
+    routerDefault.register(new AgentRpcHandler(execDefault as never))
     await routerDefault.route(makeEvent({ user_id: 10001, raw_message: '/dsh q' }))
-    expect(sent).toEqual(['收到，正在处理...', '这是结果', '最终完整结果'])
+    expect(sent).toEqual(['收到，正在处理...', '最终完整结果'])
 
-    // streamReasoning=true:reasoning 分段也回发
+    // 可见回复始终不包含推理或未完成的文本增量。
     const sent2: string[] = []
     const execOpen = {
       run: vi.fn(async (_k: string, _p: string, onChunk?: (t: string, k: 'text' | 'reasoning') => void) => {
@@ -504,9 +496,9 @@ describe('dsh-qq-bridge — MessageRouter + AccessGate', () => {
       }),
     }
     const routerOpen = new MessageRouter(gate, async (_, __, text) => void sent2.push(text))
-    routerOpen.register(new AgentRpcHandler(execOpen as never, { streamText: true, streamReasoning: true }))
+    routerOpen.register(new AgentRpcHandler(execOpen as never))
     await routerOpen.route(makeEvent({ user_id: 10001, raw_message: '/dsh q' }))
-    expect(sent2).toEqual(['收到，正在处理...', '开始思考', '这是结果', '最终完整结果'])
+    expect(sent2).toEqual(['收到，正在处理...', '最终完整结果'])
   })
 
   it('流式 text 已等于最终结果时不重复回发最终完整版', async () => {
@@ -520,9 +512,9 @@ describe('dsh-qq-bridge — MessageRouter + AccessGate', () => {
       }),
     }
     const router = new MessageRouter(gate, async (_, __, text) => void sent.push(text))
-    router.register(new AgentRpcHandler(exec as never, { streamText: true }))
+    router.register(new AgentRpcHandler(exec as never))
     await router.route(makeEvent({ user_id: 10001, raw_message: '/dsh q' }))
-    expect(sent).toEqual(['收到，正在处理...', '最终', '结果'])
+    expect(sent).toEqual(['收到，正在处理...', '最终结果'])
   })
 
   it('splitText:超长文本按 maxLen 拆分,且每条不超过限制', () => {

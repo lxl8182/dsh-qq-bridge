@@ -1,6 +1,12 @@
 # dsh-qq-bridge · QQ Remote Control for DSH
 
-本机适配版 `1.0.6-neko.5` 面向 DSH `0.2.1-rc.3`：使用 volatile Config、configForms 和原生 preset 声明。本机桌面与服务器 Web 通过各自 profile 安装，原 Linux setup 不作为桌面配置入口。
+本机适配版 `1.0.6-neko.6` 面向 DSH `0.2.1-rc.3`：使用 volatile Config、configForms 和原生 preset 声明。本机桌面与服务器 Web 通过各自 profile 安装，原 Linux setup 不作为桌面配置入口。
+
+QQ 入站按结构化消息段提取正文和图片，原始图片 CQ 码与下载地址不进入 DSH/记忆正文；附件准入在记忆准备前完成，单张图片失败会留下对应的未读取状态。纯文字中的 CQ 代码示例保留。
+
+回复完成后，普通聊天按自然换行形成独立气泡，代码、列表和引用保持整体；每条间隔约 0.8—2 秒。普通回复、主动搭话和咒语后续都完整发完本轮气泡，新消息在同会话队列等待；正在生成的主动轮次同样先完成再接新输入。平台失败停止后续发送，恢复只继续已知未发送片段。持久分段按 Unicode 码点计数，同一轮的完整可见 assistant 消息按 ID 去重并顺序投递；推理和后台过程不转发。设置页已移除逐增量回发开关。
+
+配套 `dsh-rin-memory 0.2.9` 通过 `qqBridgeEvents.assistantText/planOutput` 复用可见消息与气泡边界，主动完成提交使用核心 `rin-memory 0.1.0.dev10` 的 `part_sizes`，各片段的文本、索引和平台回执保持一致。
 
 轮次定位和咒语反馈读取 rc.3 的 `session.snapshotEvents()` 完整日志，查询回退使用 `sessionQuery.readSession()`；模型 surface 不包含 turn 边界，不能用于确认输入是否提交。准入在输入提交前失败时，回报本次的真实失败原因。
 

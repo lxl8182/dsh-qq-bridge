@@ -27,6 +27,26 @@ export function extractLastAssistantText(events) {
     }
     return null;
 }
+/** 一轮内完成的可见消息按首次出现顺序合并，相同消息 ID 只采用最后的完整版本。 */
+export function extractAssistantText(events) {
+    const messages = new Map();
+    for (const [index, event] of events.entries()) {
+        const row = event;
+        if (row.type !== 'assistant/message')
+            continue;
+        const id = row.data?.message?.id ?? index;
+        if (row.data?.interrupted) {
+            messages.delete(id);
+            continue;
+        }
+        const text = extractLastAssistantText([event]);
+        if (text && !isUnexecutedDsmlToolCall(text))
+            messages.set(id, text);
+        else
+            messages.delete(id);
+    }
+    return messages.size ? [...messages.values()].join('\n') : null;
+}
 /** Read one committed turn without mixing in later followups. */
 export function eventsForTurn(events, turn) {
     const start = events.findIndex(event => {
@@ -121,6 +141,9 @@ export class DshAgentExecutor {
     async prepareSession(sessionKey) {
         return (await this.getOrCreateSessionAgent(sessionKey)).sessionId;
     }
+    async prepareImages(images) {
+        return this.dsh.prepareImages ? this.dsh.prepareImages(images) : [...images];
+    }
     async retireSessionId(sessionId) {
         for (const [key, id] of this.sessions) {
             if (id === sessionId) {
@@ -178,8 +201,8 @@ export class DshAgentExecutor {
         const user = extractLastUserMessage(events);
         if (user?.id)
             this.turnIdentities.set(sessionKey, { sessionId, messageId: user.id });
-        const text = extractLastAssistantText(events);
-        if (text !== null && isUnexecutedDsmlToolCall(text)) {
+        const text = extractAssistantText(events);
+        if (text === null && events.some(event => isUnexecutedDsmlToolCall(extractLastAssistantText([event]) ?? ''))) {
             return [
                 'agent 生成了一个未被 DSH 执行的工具调用,已拦截原始协议文本。',
                 '这通常是当前模型/工具调用模式不匹配导致的。请换用支持 native tool calling 的模型,或调整 DSH_TOOLS_MODE 后重试。',

@@ -58,8 +58,18 @@ export declare class QqBridgeEvents {
     platform: 'official' | 'napcat';
     private replay?;
     private outputSender?;
+    private maxMessageLength;
+    private activeOutputs;
+    beginOutput(sessionId: string): () => void;
+    waitForOutput(sessionId: string): Promise<void>;
+    setOutputLimit(maximum: number): void;
     setOutputSender(sender: OutputSender): () => void;
     normalizeOutput(text: string): string;
+    planOutput(text: string): {
+        text: string;
+        part_sizes: number[];
+    };
+    assistantText(events: readonly unknown[]): string;
     deliverOutput(sessionId: string, outputId: string, parts: Array<{
         index: number;
         text: string;

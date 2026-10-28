@@ -12,6 +12,8 @@
  */
 import type { QqTurnReport } from './handlers/agent.js'
 import { parseQqControlBlocks, parseQqSpells } from './handlers/control.js'
+import { extractAssistantText } from './handlers/dsh-executor.js'
+import { replyParts } from './message-format.js'
 
 export interface QqTurnInput {
   sessionKey: string
@@ -56,6 +58,26 @@ export class QqBridgeEvents {
   platform: 'official' | 'napcat' = 'official'
   private replay?: () => QqTurnReport[]
   private outputSender?: OutputSender
+  private maxMessageLength = 4500
+  private activeOutputs = new Map<string, { promise: Promise<void>; finish: () => void }>()
+
+  beginOutput(sessionId: string): () => void {
+    if (this.activeOutputs.has(sessionId)) throw new Error('QQ session already has an active output')
+    let finish!: () => void
+    const promise = new Promise<void>(resolve => { finish = resolve })
+    const output = { promise, finish }
+    this.activeOutputs.set(sessionId, output)
+    return () => {
+      if (this.activeOutputs.get(sessionId) === output) this.activeOutputs.delete(sessionId)
+      finish()
+    }
+  }
+
+  async waitForOutput(sessionId: string): Promise<void> {
+    await this.activeOutputs.get(sessionId)?.promise
+  }
+
+  setOutputLimit(maximum: number): void { this.maxMessageLength = maximum }
 
   setOutputSender(sender: OutputSender): () => void {
     this.outputSender = sender
@@ -63,7 +85,16 @@ export class QqBridgeEvents {
   }
 
   normalizeOutput(text: string): string {
-    return parseQqControlBlocks(parseQqSpells(text).visibleText).visibleText
+    return replyParts(parseQqControlBlocks(parseQqSpells(text).visibleText).visibleText).text
+  }
+
+  planOutput(text: string): { text: string; part_sizes: number[] } {
+    const plan = replyParts(this.normalizeOutput(text), this.maxMessageLength)
+    return { text: plan.text, part_sizes: plan.part_sizes }
+  }
+
+  assistantText(events: readonly unknown[]): string {
+    return extractAssistantText(events) ?? ''
   }
 
   deliverOutput(sessionId: string, outputId: string, parts: Array<{ index: number; text: string }>, canSend: () => Promise<boolean>): Promise<QqOutputDelivery> | undefined {
@@ -149,6 +180,8 @@ export class QqBridgeEvents {
 
   /** 卸载时清空订阅,避免已销毁的服务继续持有回调。 */
   dispose(): void {
+    for (const output of this.activeOutputs.values()) output.finish()
+    this.activeOutputs.clear()
     this.listeners.clear()
     this.admissions.clear()
     this.bindings.clear()

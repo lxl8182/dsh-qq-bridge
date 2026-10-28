@@ -212,8 +212,6 @@ async function buildQqBridgeSettingsSchema(): Promise<unknown | undefined> {
       reasoningEffort: (z.string() ?? z.string()).default(''),
       models: z.array(z.string()).default([]),
       cwd: z.string().default('~'),
-      streamText: z.boolean().default(false),
-      streamReasoning: z.boolean().default(false),
       maxMessageLength: z.number().step?.(1).min?.(1).default(4500) ?? z.number().default(4500),
       ackMessage: z.string().default('收到，正在处理...'),
       timeoutMs: (z.number().step?.(1).min?.(1) ?? z.number()).optional?.() ?? z.number(),

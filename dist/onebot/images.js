@@ -132,6 +132,7 @@ export async function fetchInboundImage(source, options = {}) {
             return { skipped: `too large (${buffer.byteLength} bytes)` };
         return {
             image: {
+                ...(source.sourceIndex === undefined ? {} : { sourceIndex: source.sourceIndex }),
                 mediaType,
                 data: buffer.toString('base64'),
                 ...(source.name === undefined ? {} : { name: source.name }),

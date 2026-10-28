@@ -84,10 +84,6 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         models: z.ZodDefault<z.ZodArray<z.ZodString, "many">>;
         /** QQ Agent 默认工作目录;支持 ~ 表示当前用户 home。 */
         cwd: z.ZodDefault<z.ZodString>;
-        /** 是否边生成边回发 text 分段。默认 false:等待本轮完成后只回发最终回复。 */
-        streamText: z.ZodDefault<z.ZodBoolean>;
-        /** streamText=true 时,是否把思考过程(reasoning)也分段回发。默认 false。 */
-        streamReasoning: z.ZodDefault<z.ZodBoolean>;
         /** 单条 QQ 消息最大长度(字符数);超长自动拆分为多条发送。QQ 官方单条约 5000 字,默认留余量。 */
         maxMessageLength: z.ZodDefault<z.ZodNumber>;
         /** 收到有效 QQ 指令后立即回发的确认消息;设为空字符串可关闭。 */
@@ -118,8 +114,6 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         provider: string;
         models: string[];
         cwd: string;
-        streamText: boolean;
-        streamReasoning: boolean;
         maxMessageLength: number;
         ackMessage: string;
         timeoutMessage: string;
@@ -136,8 +130,6 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         provider?: string | undefined;
         models?: string[] | undefined;
         cwd?: string | undefined;
-        streamText?: boolean | undefined;
-        streamReasoning?: boolean | undefined;
         maxMessageLength?: number | undefined;
         ackMessage?: string | undefined;
         timeoutMs?: number | undefined;
@@ -206,8 +198,6 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         provider: string;
         models: string[];
         cwd: string;
-        streamText: boolean;
-        streamReasoning: boolean;
         maxMessageLength: number;
         ackMessage: string;
         timeoutMessage: string;
@@ -262,8 +252,6 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         provider?: string | undefined;
         models?: string[] | undefined;
         cwd?: string | undefined;
-        streamText?: boolean | undefined;
-        streamReasoning?: boolean | undefined;
         maxMessageLength?: number | undefined;
         ackMessage?: string | undefined;
         timeoutMs?: number | undefined;

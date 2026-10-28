@@ -10,6 +10,8 @@ import { BridgeModelInfo, BridgeModelSelection, BridgeModelSelectionRef, Permiss
  * - 简易形状(用于本地测试): `{ type: 'assistant/message', content: [...] }`。
  */
 export declare function extractLastAssistantText(events: readonly unknown[]): string | null;
+/** 一轮内完成的可见消息按首次出现顺序合并，相同消息 ID 只采用最后的完整版本。 */
+export declare function extractAssistantText(events: readonly unknown[]): string | null;
 /** Read one committed turn without mixing in later followups. */
 export declare function eventsForTurn(events: readonly unknown[], turn: number): readonly unknown[];
 /**
@@ -56,6 +58,7 @@ export type DshCommandExecutor = (agent: unknown, line: string) => Promise<strin
  * getOrCreate 必须返回带 dispose 的 live agent,便于 executor 统一释放。
  */
 export interface DshServiceHandles {
+    prepareImages?(images: readonly InboundImage[]): Promise<InboundImage[]>;
     /** 按 sessionKey 获取(已有)或创建(miss)一个 live agent。 */
     getOrCreate(options: {
         sessionKey: string;
@@ -113,6 +116,7 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
     });
     run(sessionKey: string, payload: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void, images?: readonly InboundImage[]): Promise<string>;
     prepareSession(sessionKey: string): Promise<string>;
+    prepareImages(images: readonly InboundImage[]): Promise<InboundImage[]>;
     retireSessionId(sessionId: string): Promise<void>;
     /**
      * 最近完成的一轮在 DSH 侧的会话与用户消息 id。
