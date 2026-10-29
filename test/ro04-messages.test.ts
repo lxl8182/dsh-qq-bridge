@@ -118,6 +118,7 @@ it('finishes every bubble before responding to a new input and never repeats sen
     await recovered.open(); await recovered.retryPending(); await recovered.dispose()
     expect(sent).toEqual(['第一句', '第二句', '第三句', '收到新消息'])
     expect(executor.run).toHaveBeenCalledTimes(2)
+    expect(handler.restorableSessions()).toEqual([{ sessionKey: 'private:1', sessionId: 'qq-test' }])
   } finally { await handler.dispose(); await rm(root, { recursive: true, force: true }) }
 })
 

@@ -200,6 +200,7 @@ async function buildQqBridgeSettingsSchema(): Promise<unknown | undefined> {
     access: z.object({
       adminQq: z.number().step?.(1).default(0) ?? z.number().default(0),
       allowlist: z.array(z.number()).default([]),
+      groupAllowlist: z.array(z.union([z.number(), z.string()])).default([]),
       commandPrefix: z.string().default(''),
       mode: z.union(['whitelist', 'open']).default('whitelist'),
     }),

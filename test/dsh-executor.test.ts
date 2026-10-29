@@ -58,6 +58,31 @@ function makeMock(repliesBySession: Record<string, unknown[]>) {
 }
 
 describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
+  it('reopens saved friend and group session IDs without sharing their histories', async () => {
+    const saved = new Map<string, { header: { cwd: string }; snapshotEvents(): unknown[] }>()
+    const create = vi.fn(async (_ctx: unknown, options: { sessionId: string }) => {
+      const session = { header: { cwd: '/original' }, snapshotEvents: () => [{ type: 'user/message', data: 'old history' }] }
+      saved.set(options.sessionId, session)
+      return { agent: { session, followup() {}, async whenIdle() {} }, async dispose() {} }
+    })
+    const resume = vi.fn(async (_ctx: unknown, options: { resumeSessionId: string }) => ({
+      agent: { session: saved.get(options.resumeSessionId)!, followup() {}, async whenIdle() {} }, async dispose() {},
+    }))
+    const ctx = { agentLoop: { createAgent: create, resume } } as never
+    const first = makeDshExecutor(ctx)
+    const friend = await first.prepareSession('private:10002')
+    const group = await first.prepareSession('group:90001')
+    await first.disposeAll()
+    const restarted = makeDshExecutor(ctx)
+    restarted.restoreSessions([{ sessionKey: 'private:10002', sessionId: friend }, { sessionKey: 'group:90001', sessionId: group }])
+    expect(await restarted.prepareSession('private:10002')).toBe(friend)
+    expect(await restarted.prepareSession('group:90001')).toBe(group)
+    expect(await restarted.prepareSession('private:10003')).not.toBe(friend)
+    expect(resume.mock.calls.map(([, options]) => options.resumeSessionId)).toEqual([friend, group])
+    expect(create).toHaveBeenCalledTimes(3)
+    await restarted.disposeAll()
+  })
+
   it('reads the rc.3 live log, retaining turn boundaries and the original input before spell followups', async () => {
     const events: unknown[] = []
     const session = { id: '', snapshotEvents: () => events }

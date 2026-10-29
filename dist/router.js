@@ -34,7 +34,21 @@ export class MessageRouter {
         if (!this.gate.allow(evt))
             return false;
         const scope = evt.message_type === 'private' ? 'private' : 'group';
-        const normalized = normalizeInboundMessage(evt.raw_message, evt.message);
+        if (scope === 'group' && evt.group_id === undefined)
+            return false;
+        if (scope === 'group' && evt.reply_target?.scope !== 'group') {
+            const mentioned = evt.self_id !== undefined && (Array.isArray(evt.message)
+                ? evt.message.some(part => part.type === 'at' && String(part.data?.qq) === String(evt.self_id))
+                : [...evt.raw_message.matchAll(/\[CQ:at,qq=([^,\]]+)[^\]]*\]/gu)]
+                    .some(match => match[1] === String(evt.self_id)));
+            if (!mentioned)
+                return false;
+        }
+        const segments = scope === 'group' && Array.isArray(evt.message)
+            ? evt.message.filter(part => !(part.type === 'at' && String(part.data?.qq) === String(evt.self_id))) : evt.message;
+        const raw = scope === 'group' && evt.self_id !== undefined
+            ? evt.raw_message.replace(/\[CQ:at,qq=([^,\]]+)[^\]]*\]/gu, (match, id) => id === String(evt.self_id) ? '' : match) : evt.raw_message;
+        const normalized = normalizeInboundMessage(raw, segments);
         const payload = this.gate.stripPrefix(normalized.text);
         if (payload === null)
             return false;
@@ -51,6 +65,7 @@ export class MessageRouter {
         const imageSources = normalized.images;
         const ctx = {
             userId: evt.user_id,
+            senderName: String(evt.sender?.card || evt.sender?.nickname || '').replace(/[\r\n]/g, ' ').slice(0, 80),
             scope,
             groupId: evt.group_id,
             payload,
@@ -81,6 +96,8 @@ export class MessageRouter {
             return true;
         let consumed = false;
         for (const handler of this.handlers.values()) {
+            if ((!ctx.owner || scope === 'group') && handler.name !== 'agent')
+                continue;
             if (handler.test(payload)) {
                 consumed = true;
                 await handler.run(ctx);

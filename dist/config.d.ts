@@ -51,17 +51,20 @@ declare const DshQqBridgeConfig: z.ZodObject<{
     access: z.ZodDefault<z.ZodObject<{
         adminQq: z.ZodNumber;
         allowlist: z.ZodDefault<z.ZodArray<z.ZodNumber, "many">>;
+        groupAllowlist: z.ZodDefault<z.ZodArray<z.ZodUnion<[z.ZodNumber, z.ZodString]>, "many">>;
         commandPrefix: z.ZodDefault<z.ZodString>;
         mode: z.ZodDefault<z.ZodEnum<["whitelist", "open"]>>;
     }, "strip", z.ZodTypeAny, {
         mode: "whitelist" | "open";
         adminQq: number;
         allowlist: number[];
+        groupAllowlist: (string | number)[];
         commandPrefix: string;
     }, {
         adminQq: number;
         mode?: "whitelist" | "open" | undefined;
         allowlist?: number[] | undefined;
+        groupAllowlist?: (string | number)[] | undefined;
         commandPrefix?: string | undefined;
     }>>;
     agent: z.ZodDefault<z.ZodObject<{
@@ -221,6 +224,7 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         mode: "whitelist" | "open";
         adminQq: number;
         allowlist: number[];
+        groupAllowlist: (string | number)[];
         commandPrefix: string;
     };
     shell: {
@@ -274,6 +278,7 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         adminQq: number;
         mode?: "whitelist" | "open" | undefined;
         allowlist?: number[] | undefined;
+        groupAllowlist?: (string | number)[] | undefined;
         commandPrefix?: string | undefined;
     } | undefined;
     shell?: {

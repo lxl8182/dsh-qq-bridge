@@ -106,11 +106,16 @@ describe('settings page actions', () => {
     const ops = helpers.generalOpsFromDraft(draft)
     expect(ops.map((op: any) => op.path.join('.'))).toEqual([
       'agent.provider', 'agent.model', 'agent.cwd',
-      'access.mode', 'permissionDefault', 'notifications.agentReply.enabled',
+      'access.mode', 'access.groupAllowlist', 'permissionDefault', 'notifications.agentReply.enabled',
     ])
     expect(JSON.stringify(ops)).not.toContain('unsaved')
     expect(helpers.platformOpsFromDraft(draft, undefined, true).some((op: any) => op.path[0] === 'napcat')).toBe(false)
     draft.platform = 'napcat'
+    draft.access.allowlistText = '10002,10003'
+    draft.access.groupAllowlistText = '90001,90002'
+    const lists = helpers.generalOpsFromDraft(draft)
+    expect(lists.find((op: any) => op.path.join('.') === 'access.allowlist').value).toEqual([10002, 10003])
+    expect(lists.find((op: any) => op.path.join('.') === 'access.groupAllowlist').value).toEqual([90001, 90002])
     expect(helpers.platformOpsFromDraft(draft, undefined, true).some((op: any) => op.path[0] === 'official')).toBe(false)
   })
 

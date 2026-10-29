@@ -12,6 +12,8 @@
  */
 import type { QqTurnReport } from './handlers/agent.js';
 export interface QqTurnInput {
+    /** 准入订阅者确认纯聊天隔离已安装；不来自 QQ 消息正文。 */
+    chatOnlyReady?: boolean;
     sessionKey: string;
     sessionId?: string;
     scope: 'private' | 'group';

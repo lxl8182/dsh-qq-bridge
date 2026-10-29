@@ -32,6 +32,7 @@ const DshQqBridgeConfig = z.object({
     .object({
       adminQq: z.number(),
       allowlist: z.array(z.number()).default([]),
+      groupAllowlist: z.array(z.union([z.number(), z.string()])).default([]),
       commandPrefix: z.string().default(''),
       mode: z.enum(['whitelist', 'open']).default('whitelist'),
     })

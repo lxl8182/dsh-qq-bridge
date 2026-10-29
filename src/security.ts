@@ -7,6 +7,8 @@ export interface AccessOptions {
   adminId?: MessageTargetId
   /** 额外允许的 user_id/openid */
   allowlist: MessageTargetId[]
+  /** 允许参与聊天的群；群内成员无需加入私聊白名单。 */
+  groupAllowlist?: MessageTargetId[]
   /** 指令前缀。空字符串表示白名单用户的所有消息都进入 router。 */
   commandPrefix: string
   /** whitelist: 只允许 admin+allowlist;open: 任何人都能触发(仅测试用) */
@@ -22,10 +24,12 @@ export class AccessGate {
   /**
    * 是否允许这条消息进入 router。
    * whitelist 模式仅放行 admin + allowlist;open 模式放行任何人。
-   * 群聊默认也受白名单约束(避免陌生人在群里触发)。
+   * 群聊按群白名单放行，成员不必另外加入私聊白名单。
    */
-  allow(evt: Pick<OnebotMessageEvent, 'user_id'>): boolean {
+  allow(evt: Pick<OnebotMessageEvent, 'user_id'> & Partial<Pick<OnebotMessageEvent, 'message_type' | 'group_id'>>): boolean {
     if (this.opts.mode === 'open') return true
+    if (evt.message_type === 'group') return evt.group_id !== undefined
+      && (this.opts.groupAllowlist ?? []).includes(evt.group_id)
     const adminId = this.opts.adminId ?? this.opts.adminQq
     return evt.user_id === adminId || this.opts.allowlist.includes(evt.user_id)
   }

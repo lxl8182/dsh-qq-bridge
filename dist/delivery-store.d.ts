@@ -1,6 +1,6 @@
 import type { HandlerContext } from './router.js';
 import type { QqTurnReport } from './handlers/agent.js';
-export type SavedInput = Pick<HandlerContext, 'scope' | 'userId' | 'groupId' | 'owner' | 'messageId' | 'payload' | 'replyTarget' | 'images'>;
+export type SavedInput = Pick<HandlerContext, 'scope' | 'userId' | 'senderName' | 'groupId' | 'owner' | 'messageId' | 'payload' | 'replyTarget' | 'images'>;
 export interface DeliveryPart {
     outputIndex?: number;
     text: string;

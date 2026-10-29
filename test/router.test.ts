@@ -28,6 +28,33 @@ function makeEvent(partial: Partial<OnebotMessageEvent> & { user_id: number; raw
 }
 
 describe('dsh-qq-bridge — MessageRouter + AccessGate', () => {
+  it('light chat isolates friends and groups, requires a bot mention and keeps group speaker identity', async () => {
+    const gate = new AccessGate({ adminQq: 10001, allowlist: [10002, 10003], groupAllowlist: [90001, 90002], commandPrefix: '', mode: 'whitelist' })
+    const calls: Array<[string, string]> = [], sent: string[] = []
+    const router = new MessageRouter(gate, async (_scope, _id, text) => { sent.push(text) })
+    const adminCommand = vi.fn(async () => {})
+    router.register({ name: 'shell', test: () => true, run: adminCommand })
+    const dispatch = vi.fn(async () => '不应执行')
+    router.register(new AgentRpcHandler({ run: async (key, text) => { calls.push([key, text]); return '收到<dsh-qq-bridge-control>{"action":"set_cwd","path":"/secret"}</dsh-qq-bridge-control>' } },
+      { ackMessage: '', controlDispatcher: { dispatch } as never, waitForBubble: async () => {} }))
+    await router.route(makeEvent({ user_id: 10002, raw_message: '第一位好友' }))
+    await router.route(makeEvent({ user_id: 10003, raw_message: '第二位好友' }))
+    expect(await router.route(makeEvent({ user_id: 10004, raw_message: '未放行' }))).toBe(false)
+    expect(await router.route(makeEvent({ user_id: 10004, message_type: 'group', group_id: 90001, raw_message: '没提到机器人' }))).toBe(false)
+    const group = { user_id: 10004, message_type: 'group' as const, group_id: 90001, self_id: 20001,
+      sender: { card: '小明' }, raw_message: '[CQ:at,qq=20001]你好', message: [{ type: 'at', data: { qq: '20001' } }, { type: 'text', data: { text: '你好' } }] }
+    await router.route(makeEvent(group))
+    await router.route(makeEvent({ ...group, user_id: 10005, sender: { nickname: '小王' }, message_id: 2 }))
+    await router.route(makeEvent({ ...group, group_id: 90002 }))
+    expect(await router.route(makeEvent({ ...group, group_id: 99999 }))).toBe(false)
+    expect(calls.map(([key]) => key)).toEqual(['private:10002', 'private:10003', 'group:90001', 'group:90001', 'group:90002'])
+    expect(calls[2][1]).toBe('【群成员 小明 · 10004】\n你好')
+    expect(calls[3][1]).toContain('小王 · 10005')
+    expect(adminCommand).not.toHaveBeenCalled()
+    expect(dispatch).not.toHaveBeenCalled()
+    expect(sent).toHaveLength(5)
+  })
+
   it('whitelist 模式:白名单外的人被拒绝', async () => {
     const gate = new AccessGate({ adminQq: 10001, allowlist: [10002], commandPrefix: '/dsh', mode: 'whitelist' })
     const sent: string[] = []
@@ -417,15 +444,15 @@ describe('dsh-qq-bridge — MessageRouter + AccessGate', () => {
     expect(sent.join('\n')).not.toContain('dsh-qq-bridge-control')
   })
 
-  it('group 消息同样受白名单与前缀约束', async () => {
-    const gate = new AccessGate({ adminQq: 10001, allowlist: [], commandPrefix: '/dsh', mode: 'whitelist' })
+  it('group 消息受群白名单、提及与前缀约束', async () => {
+    const gate = new AccessGate({ adminQq: 10001, allowlist: [], groupAllowlist: [555], commandPrefix: '/dsh', mode: 'whitelist' })
     const run = vi.fn(async (_k: string, p: string) => `r:${p}`)
     const sent: string[] = []
     const router = new MessageRouter(gate, async (scope, id, text) => void sent.push(`${scope}#${id}#${text}`))
     router.register(new AgentRpcHandler({ run } as never))
-    await router.route(makeEvent({ message_type: 'group', group_id: 555, user_id: 10001, raw_message: '/dsh task' }))
-    expect(run).toHaveBeenCalledWith('group:555', 'task')
-    expect(sent).toEqual(['group#555#收到，正在处理...', 'group#555#r:task'])
+    await router.route(makeEvent({ message_type: 'group', group_id: 555, user_id: 10001, self_id: 20001, raw_message: '[CQ:at,qq=20001]/dsh task' }))
+    expect(run).toHaveBeenCalledWith('group:555', '【群成员 10001 · 10001】\ntask')
+    expect(sent).toEqual(['group#555#收到，正在处理...', 'group#555#r:【群成员 10001 · 10001】', 'group#555#task'])
   })
 
   it('多个 handler 可按命令名路由(shell vs agent)', async () => {

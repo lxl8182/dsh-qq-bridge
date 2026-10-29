@@ -158,6 +158,10 @@ export declare class AgentRpcHandler implements Handler {
     private waitBetween;
     private sendPending;
     completedReports(): QqTurnReport[];
+    restorableSessions(): Array<{
+        sessionKey: string;
+        sessionId: string;
+    }>;
     retireSession(sessionId: string): Promise<void>;
     private enqueue;
     retryPending(): Promise<void>;

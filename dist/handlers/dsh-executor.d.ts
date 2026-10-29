@@ -101,6 +101,7 @@ export interface DshServiceHandles {
     getOrCreate(options: {
         sessionKey: string;
         sessionId: string;
+        resume?: boolean;
         cwd?: string;
         modelSelection: BridgeModelSelectionRef;
     }): Promise<DshRenderedAgent>;
@@ -129,6 +130,7 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
     private opts;
     private agents;
     private sessions;
+    private restoredSessions;
     private sessionCwds;
     private sessionVersions;
     private sessionSelections;
@@ -245,6 +247,10 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
      * 它不创建会话也不改变映射。
      */
     currentSessionId(sessionKey: string): string | undefined;
+    restoreSessions(sessions: readonly {
+        sessionKey: string;
+        sessionId: string;
+    }[]): void;
     get liveSessionCount(): number;
     private enqueue;
     private getOrCreateSessionAgent;

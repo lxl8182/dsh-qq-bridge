@@ -6,6 +6,7 @@ import { type ImageSource } from './onebot/images.js';
  */
 export interface HandlerContext {
     userId: MessageTargetId;
+    senderName?: string;
     scope: 'private' | 'group';
     groupId?: MessageTargetId;
     /** 已经剥离指令前缀后的有效载荷 */

@@ -1,12 +1,14 @@
 # dsh-qq-bridge · QQ Remote Control for DSH
 
-本批适配版 `1.0.6-neko.9` 已完成本机验收，面向 DSH `0.2.1-rc.3`：使用 volatile Config、configForms 和原生 preset 声明。本机桌面与服务器 Web 通过各自 profile 安装，原 Linux setup 不作为桌面配置入口。
+本批适配版 `1.0.6-neko.10` 已完成本机验收，面向 DSH `0.2.1-rc.3`：使用 volatile Config、configForms 和原生 preset 声明。本机桌面与服务器 Web 通过各自 profile 安装，原 Linux setup 不作为桌面配置入口。
 
 QQ 入站按结构化消息段提取正文和图片，原始图片 CQ 码与下载地址不进入 DSH/记忆正文；附件准入在记忆准备前完成，单张图片失败会留下对应的未读取状态。纯文字中的 CQ 代码示例保留。
 
+好友与群聊使用轻量聊天模式：在设置页填写“允许私聊的好友 QQ”和“允许聊天的群”；对应配置为 `access.allowlist`、`access.groupAllowlist`，官方机器人好友使用 `official.allowlistOpenIds`。白名单群内任意成员 @机器人即可交互，各好友使用独立会话、同群共享一段会话且保留成员署名，不同群隔离。会话保存原生完整历史，重启后使用 DSH `resume` 恢复；这部分暂不提取、召回记忆，不演化、不主动搭话、不自动压缩或换段，不开放后台执行、咒语和管理命令。需同时启用 `dsh-rin-memory` 的角色隔离；好友/群使用 QQ 预设的人设，主人私聊继续使用 RIN 人格与记忆。
+
 回复完成后，普通聊天按自然换行形成独立气泡，代码、列表和引用保持整体；每条间隔约 0.8—2 秒。普通回复、主动搭话和咒语后续都完整发完本轮气泡，新消息在同会话队列等待；正在生成的主动轮次同样先完成再接新输入。平台失败停止后续发送，恢复只继续已知未发送片段。持久分段按 Unicode 码点计数，同一轮的完整可见 assistant 消息按 ID 去重并顺序投递；推理和后台过程不转发。设置页已移除逐增量回发开关。
 
-配套版本 `dsh-rin-memory 0.3.1` 通过 `qqBridgeEvents.assistantText/planOutput` 复用可见消息与气泡边界，主动完成提交使用核心 `rin-memory 0.1.0.dev11` 的 `part_sizes`。持久正文与回执保留原始分段和 Unicode 码点数；QQ 发送时移除各片段首尾空白行，保留片段内部换行、代码和缩进，避免气泡底部出现空行。
+配套版本 `dsh-rin-memory 0.3.2` 提供好友/群聊的纯聊天隔离，并通过 `qqBridgeEvents.assistantText/planOutput` 复用可见消息与气泡边界；主动完成提交使用核心 `rin-memory 0.1.0.dev11` 的 `part_sizes`。持久正文与回执保留原始分段和 Unicode 码点数；QQ 发送时移除各片段首尾空白行，保留片段内部换行、代码和缩进，避免气泡底部出现空行。
 
 本批由 `dsh-rin-memory` 持有统一候选与模型联系计划；bridge负责合法身份、分段端口和唯一持久投递。上下文达到128K软预算后，在本轮气泡发完才切换内部DSH段，QQ聊天与长期记忆连续。服务器仍需在本机验收后手动安装固定提交的新版本包。
 
@@ -712,7 +714,7 @@ pnpm dsh web --patch /tmp/dsh-qq-bridge-agent.patch.yml \
 - 本 fork（个人）：`origin` → `https://github.com/lxl8182/dsh-qq-bridge`
 - 同步方式：`git fetch upstream && git merge upstream/main`；本地 `main` 直接开发并推送到 `origin/main`，不向 `upstream` 推送，不 force-push。
 
-本 fork 基于上游 `6e13f95` 开发，本批目标版本 `1.0.6-neko.9`（Windows 桌面版 DSH `0.2.1-rc.3` 本机适配）。MIT License 与原作者版权沿用上游，见 [LICENSE](LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+本 fork 基于上游 `6e13f95` 开发，本批目标版本 `1.0.6-neko.10`（Windows 桌面版 DSH `0.2.1-rc.3` 本机适配）。MIT License 与原作者版权沿用上游，见 [LICENSE](LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 许可与致谢
 

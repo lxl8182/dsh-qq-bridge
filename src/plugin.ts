@@ -62,6 +62,10 @@ interface DshCtx extends InteractionCtxLike {
   profileContext?: { home: string }
   get?(name: string): unknown
   agentLoop?: {
+    resume?(
+      ownerCtx: unknown,
+      options: { resumeSessionId: string; agentOptions?: Record<string, unknown>; setup?: (agentCtx: unknown) => void | Promise<void> },
+    ): Promise<{ agent: DshAgent; dispose(): Promise<void> }>
     createAgent(
       ownerCtx: unknown,
       options: {
@@ -243,6 +247,7 @@ async function startQqBridge(ctx: DshCtx, cfg: DshQqBridgeConfig, events?: QqBri
     adminQq: cfg.access.adminQq,
     adminId: adminTarget,
     allowlist: officialMode ? cfg.official.allowlistOpenIds : cfg.access.allowlist,
+    groupAllowlist: cfg.access.groupAllowlist,
     commandPrefix: cfg.access.commandPrefix,
     mode: cfg.access.mode,
   })
@@ -325,7 +330,12 @@ async function startQqBridge(ctx: DshCtx, cfg: DshQqBridgeConfig, events?: QqBri
         respond: text => outbound(input.scope, target, text, input.replyTarget),
         send: text => outboundWithReceipt(input.scope, target, text, input.replyTarget) }
     },
-    prepareTurn: input => events?.prepare(input) ?? Promise.resolve(),
+    prepareTurn: async input => {
+      await events?.prepare(input)
+      if ((!input.owner || input.scope === 'group') && input.chatOnlyReady !== true) {
+        throw new Error('好友/群聊需要启用新版 dsh-rin-memory 纯聊天隔离。')
+      }
+    },
     waitForOutput: async sessionKey => {
       const sessionId = executor.currentSessionId(sessionKey)
       if (sessionId) await events?.waitForOutput(sessionId)
@@ -358,6 +368,8 @@ async function startQqBridge(ctx: DshCtx, cfg: DshQqBridgeConfig, events?: QqBri
     controlDispatcher,
   })
   await agentHandler.open()
+  executor.restoreSessions(agentHandler.restorableSessions()
+    .filter(row => row.sessionKey !== `private:${adminTarget}`))
   const disposeSessionOutput = registerQqSessionOutput(ctx, executor, events, agentHandler)
   const disposeRetirer = events?.setRetirer(async sessionId => {
     await agentHandler.retireSession(sessionId)
@@ -549,6 +561,7 @@ function wireDsh(
     async getOrCreate(options: {
       sessionKey: string
       sessionId: string
+      resume?: boolean
       cwd?: string
       modelSelection: BridgeModelSelectionRef
     }): Promise<DshRenderedAgent> {
@@ -559,8 +572,7 @@ function wireDsh(
         console.warn(`[dsh-qq-bridge] agent preset "${agentCfg.preset}" requested but agentPresets service is unavailable`)
       }
       const cwd = options.cwd ?? workdir()
-      const handle = await loop.createAgent(ctx, {
-        sessionId: options.sessionId,
+      const agentConfig = {
         // agent 的 model 路由必须显式给出,否则 prompt 组装时 `{{model}}` 无值。
         agentOptions: {
           provider: options.modelSelection.current.provider,
@@ -578,8 +590,13 @@ function wireDsh(
               },
             }
           : { setup: (agentCtx: unknown) => void installBridgeModelSelection(agentCtx, options.modelSelection) }),
-      })
-      await attachWorkspace?.(options.sessionId, cwd)
+      }
+      if (options.resume && !loop.resume) throw new Error('DSH 原生会话恢复接口不可用，已停止以保留历史。')
+      const handle = options.resume
+        ? await loop.resume!(ctx, { ...agentConfig, resumeSessionId: options.sessionId })
+        : await loop.createAgent(ctx, { ...agentConfig, sessionId: options.sessionId })
+      const sessionCwd = (handle.agent.session as { header?: { cwd?: string } }).header?.cwd ?? cwd
+      await attachWorkspace?.(options.sessionId, sessionCwd)
       interactions?.bindAgent(options.sessionKey, handle.agent)
       // 捕获 live session 对象:用于 session/event 过滤(流式分段)。
       const session = handle.agent.session

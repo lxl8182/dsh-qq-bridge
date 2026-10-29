@@ -9,11 +9,14 @@ export class AccessGate {
     /**
      * 是否允许这条消息进入 router。
      * whitelist 模式仅放行 admin + allowlist;open 模式放行任何人。
-     * 群聊默认也受白名单约束(避免陌生人在群里触发)。
+     * 群聊按群白名单放行，成员不必另外加入私聊白名单。
      */
     allow(evt) {
         if (this.opts.mode === 'open')
             return true;
+        if (evt.message_type === 'group')
+            return evt.group_id !== undefined
+                && (this.opts.groupAllowlist ?? []).includes(evt.group_id);
         const adminId = this.opts.adminId ?? this.opts.adminQq;
         return evt.user_id === adminId || this.opts.allowlist.includes(evt.user_id);
     }

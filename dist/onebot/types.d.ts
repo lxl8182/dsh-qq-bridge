@@ -24,6 +24,12 @@ export interface OnebotMessageEvent {
     message_type: OnebotMessageType;
     /** 发送者标识:NapCat 为 QQ 号,官方机器人为 openid。 */
     user_id: MessageTargetId;
+    /** 接收入站消息的机器人账号。 */
+    self_id?: MessageTargetId;
+    sender?: {
+        nickname?: string;
+        card?: string;
+    };
     /** 群聊才有 */
     group_id?: MessageTargetId;
     /** 文本视图:图片在这里是空的,图片内容只能从 `message` 段取。 */

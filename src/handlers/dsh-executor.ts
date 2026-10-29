@@ -190,6 +190,7 @@ export interface DshServiceHandles {
   getOrCreate(options: {
     sessionKey: string
     sessionId: string
+    resume?: boolean
     cwd?: string
     modelSelection: BridgeModelSelectionRef
   }): Promise<DshRenderedAgent>
@@ -219,6 +220,7 @@ export interface DshServiceHandles {
 export class DshAgentExecutor implements AgentExecutor, PermissionController, SessionLifecycleController {
   private agents = new Map<string, DshRenderedAgent>()
   private sessions = new Map<string, string>() // sessionKey -> sessionId
+  private restoredSessions = new Set<string>()
   private sessionCwds = new Map<string, string>()
   private sessionVersions = new Map<string, number>()
   private sessionSelections = new Map<string, BridgeModelSelection>()
@@ -393,6 +395,7 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
       await agent.dispose()
     }
     this.sessions.delete(sessionKey)
+    this.restoredSessions.delete(sessionKey)
     this.queues.delete(sessionKey)
     // The identity belonged to the session that is gone; a new session must not
     // inherit it.
@@ -536,6 +539,7 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
     const agents = [...this.agents.values()]
     this.agents.clear()
     this.sessions.clear()
+    this.restoredSessions.clear()
     this.sessionCwds.clear()
     this.sessionVersions.clear()
     this.sessionSelections.clear()
@@ -555,6 +559,15 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
    */
   currentSessionId(sessionKey: string): string | undefined {
     return this.sessions.get(sessionKey)
+  }
+
+  restoreSessions(sessions: readonly { sessionKey: string; sessionId: string }[]): void {
+    for (const { sessionKey, sessionId } of sessions) {
+      if (!this.sessions.has(sessionKey)) {
+        this.sessions.set(sessionKey, sessionId)
+        this.restoredSessions.add(sessionKey)
+      }
+    }
   }
 
   get liveSessionCount(): number {
@@ -579,10 +592,12 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
       agent = await this.dsh.getOrCreate({
         sessionKey,
         sessionId,
+        resume: this.restoredSessions.has(sessionKey),
         cwd: this.sessionCwds.get(sessionKey) ?? this.opts.defaultCwd,
         modelSelection: this.selectionRef(sessionKey),
       })
       this.agents.set(sessionKey, agent)
+      this.restoredSessions.delete(sessionKey)
     }
     return { agent, sessionId }
   }

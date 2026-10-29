@@ -62,6 +62,7 @@ export class DeliveryStore {
         }
         const input = {
             scope: ctx.scope, userId: ctx.userId, owner: ctx.owner, payload: ctx.payload,
+            ...(ctx.senderName ? { senderName: ctx.senderName } : {}),
             ...(ctx.groupId === undefined ? {} : { groupId: ctx.groupId }),
             ...(ctx.messageId === undefined ? {} : { messageId: ctx.messageId }),
             ...(ctx.replyTarget === undefined ? {} : { replyTarget: ctx.replyTarget }),

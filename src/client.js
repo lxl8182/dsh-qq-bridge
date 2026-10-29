@@ -290,7 +290,12 @@ window.__ModuleLoader__.load({
           h("div", { style: styles.grid },
             selectField("访问模式", draft.access.mode, ["whitelist", "open"], disabled, (value) => update(["access", "mode"], value)),
             selectField("默认权限", draft.permissionDefault, ["workspace-write", "danger-full-access", "keep"], disabled, (value) => update(["permissionDefault"], value)),
+            draft.platform === "napcat" ? textField("允许私聊的好友 QQ（逗号分隔）", draft.access.allowlistText, disabled,
+              (value) => update(["access", "allowlistText"], value)) : null,
+            textField("允许聊天的群（逗号分隔）", draft.access.groupAllowlistText, disabled,
+              (value) => update(["access", "groupAllowlistText"], value)),
           ),
+          h("p", { style: styles.subtle }, "好友与群聊各自保留完整会话历史，暂不接入个人记忆、演化或咒语。群内 @机器人时回复。"),
           h("label", { style: styles.checkbox },
             h("input", {
               type: "checkbox",
@@ -746,6 +751,8 @@ window.__ModuleLoader__.load({
         access: {
           adminQq: accessAdminQq,
           adminQqText: accessAdminQq > 0 ? String(accessAdminQq) : "",
+          allowlistText: (source.access?.allowlist ?? []).join(","),
+          groupAllowlistText: (source.access?.groupAllowlist ?? []).join(","),
           commandPrefix: source.access?.commandPrefix ?? "",
           mode: source.access?.mode === "open" ? "open" : "whitelist",
         },
@@ -778,13 +785,17 @@ window.__ModuleLoader__.load({
     }
 
     function isGeneralPath(path) {
-      return ["agent", "notifications", "permissionDefault"].includes(path[0]) || (path[0] === "access" && path[1] === "mode");
+      return ["agent", "notifications", "permissionDefault"].includes(path[0])
+        || (path[0] === "access" && ["mode", "allowlist", "groupAllowlist"].includes(path[1]));
     }
 
     function generalOpsFromDraft(draft) {
       return [
         ...["provider", "model", "cwd"].map((key) => set(["agent", key], draft.agent[key])),
         set(["access", "mode"], draft.access.mode),
+        ...(draft.platform === "napcat" ? [set(["access", "allowlist"], splitLines(draft.access.allowlistText).map(Number))] : []),
+        set(["access", "groupAllowlist"], splitLines(draft.access.groupAllowlistText)
+          .map(id => draft.platform === "napcat" ? Number(id) : id)),
         set(["permissionDefault"], draft.permissionDefault),
         set(["notifications", "agentReply", "enabled"], draft.notifications.agentReplyEnabled),
       ];
@@ -813,7 +824,9 @@ window.__ModuleLoader__.load({
         set(["official", "allowlistOpenIds"], splitLines(draft.official.allowlistOpenIdsText)),
         set(["official", "sandbox"], draft.official.sandbox),
         set(["access", "adminQq"], senderQq),
-        set(["access", "allowlist"], []),
+        set(["access", "allowlist"], splitLines(draft.access.allowlistText).map(Number)),
+        set(["access", "groupAllowlist"], splitLines(draft.access.groupAllowlistText)
+          .map(id => draft.platform === "napcat" ? Number(id) : id)),
         set(["access", "commandPrefix"], draft.access.commandPrefix),
         set(["access", "mode"], draft.access.mode),
         set(["agent"], {
@@ -847,6 +860,8 @@ window.__ModuleLoader__.load({
     }
 
     function generalConfigurationError(draft) {
+      if (draft.platform === "napcat" && splitLines(draft.access.allowlistText).some(id => !validQq(id))) return "好友 QQ 请填写正整数，多个用逗号分隔。";
+      if (draft.platform === "napcat" && splitLines(draft.access.groupAllowlistText).some(id => !validQq(id))) return "群号请填写正整数，多个用逗号分隔。";
       if (!["whitelist", "open"].includes(draft.access.mode)) return "请选择有效的访问模式。";
       if (!["workspace-write", "danger-full-access", "keep"].includes(draft.permissionDefault)) return "请选择有效的默认权限。";
       if (!String(draft.agent.provider || "").trim()) return "请选择 Agent Provider。";
@@ -899,7 +914,7 @@ window.__ModuleLoader__.load({
     }
 
     function splitLines(value) {
-      return value.split(/\r?\n|,/).map((entry) => entry.trim()).filter(Boolean);
+      return String(value ?? "").split(/\r?\n|,/).map((entry) => entry.trim()).filter(Boolean);
     }
 
     function setPath(source, path, value) {

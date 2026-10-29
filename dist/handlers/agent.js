@@ -82,6 +82,17 @@ export class AgentRpcHandler {
     completedReports() {
         return Object.values(this.delivery.turns).flatMap(turn => turn.report ? [turn.report] : []);
     }
+    restorableSessions() {
+        const sessions = new Map();
+        for (const turn of Object.values(this.delivery.turns)) {
+            const key = sessionKeyOf(turn.input);
+            if (turn.retired)
+                sessions.delete(key);
+            else if (turn.sessionId)
+                sessions.set(key, turn.sessionId);
+        }
+        return [...sessions].map(([sessionKey, sessionId]) => ({ sessionKey, sessionId }));
+    }
     async retireSession(sessionId) {
         for (const turn of Object.values(this.delivery.turns)) {
             if (turn.sessionId !== sessionId && turn.report?.sessionId !== sessionId)
@@ -306,9 +317,7 @@ export class AgentRpcHandler {
         if (turn)
             this.active.set(ctx, turn);
         const sessionKey = sessionKeyOf(ctx);
-        // The agent receives exactly the user's words: no source banner, no style
-        // marker, no auto-invoked skill. Anything the bridge wrapped in would become
-        // part of what the model reads, so the payload stays verbatim.
+        // 私聊保留原话；群聊在真正调用模型时补发言人署名。
         const payload = ctx.payload;
         const gate = this.opts.webActivityGate;
         if (gate?.isBusy()) {
@@ -376,12 +385,14 @@ export class AgentRpcHandler {
             }
             if (ackMessage)
                 await this.respondChunk(ctx, ackMessage);
+            const modelInput = ctx.scope === 'group'
+                ? `【群成员 ${ctx.senderName || ctx.userId} · ${ctx.userId}】\n${payload}` : payload;
             {
                 // AgentExecutor.run resolve 即本轮完成标志:DSH executor 在内部等待 agent.whenIdle()。
                 // 没有图片时保持两参调用:既有实现与测试都按这个形状断言。
                 const result = await withTimeout(images.length === 0
-                    ? this.executor.run(sessionKey, payload)
-                    : this.executor.run(sessionKey, payload, undefined, images), timeoutMs);
+                    ? this.executor.run(sessionKey, modelInput)
+                    : this.executor.run(sessionKey, modelInput, undefined, images), timeoutMs);
                 if (this.stopped || stored?.retired)
                     return;
                 if (stored) {
@@ -458,12 +469,12 @@ export class AgentRpcHandler {
      * 便于调用方知道哪些平台消息已经产生。
      */
     async respondAgentOutput(ctx, sessionKey, result, options = {}) {
-        const dispatcher = this.opts.controlDispatcher;
+        const dispatcher = ctx.owner && ctx.scope === 'private' ? this.opts.controlDispatcher : undefined;
         // 咒语先拆:标签属于「模型还没说完」的部分,不能出现在主人看到的正文里。
         // 拆完仍是纯文本,所以下面有没有控制块分发器都能走同一条路。
         const spelled = parseQqSpells(result);
         if (!dispatcher) {
-            const visible = replyParts(spelled.visibleText).text;
+            const visible = replyParts(parseQqControlBlocks(spelled.visibleText).visibleText).text;
             const parts = await this.respondChunk(ctx, visible, 'reply');
             const offset = options.offset ?? 0;
             return {

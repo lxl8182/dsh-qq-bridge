@@ -27,6 +27,14 @@ interface DshCtx extends InteractionCtxLike {
     };
     get?(name: string): unknown;
     agentLoop?: {
+        resume?(ownerCtx: unknown, options: {
+            resumeSessionId: string;
+            agentOptions?: Record<string, unknown>;
+            setup?: (agentCtx: unknown) => void | Promise<void>;
+        }): Promise<{
+            agent: DshAgent;
+            dispose(): Promise<void>;
+        }>;
         createAgent(ownerCtx: unknown, options: {
             sessionId: string;
             agentOptions?: Record<string, unknown>;

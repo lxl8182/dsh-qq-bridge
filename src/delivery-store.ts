@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { HandlerContext } from './router.js'
 import type { QqTurnReport } from './handlers/agent.js'
 
-export type SavedInput = Pick<HandlerContext, 'scope' | 'userId' | 'groupId' | 'owner' | 'messageId' | 'payload' | 'replyTarget' | 'images'>
+export type SavedInput = Pick<HandlerContext, 'scope' | 'userId' | 'senderName' | 'groupId' | 'owner' | 'messageId' | 'payload' | 'replyTarget' | 'images'>
 export interface DeliveryPart {
   outputIndex?: number
   text: string
@@ -88,6 +88,7 @@ export class DeliveryStore {
     }
     const input: SavedInput = {
       scope: ctx.scope, userId: ctx.userId, owner: ctx.owner, payload: ctx.payload,
+      ...(ctx.senderName ? { senderName: ctx.senderName } : {}),
       ...(ctx.groupId === undefined ? {} : { groupId: ctx.groupId }),
       ...(ctx.messageId === undefined ? {} : { messageId: ctx.messageId }),
       ...(ctx.replyTarget === undefined ? {} : { replyTarget: ctx.replyTarget }),
