@@ -385,7 +385,14 @@ export class QqBridgeEvents {
   async prepare(input: QqTurnInput): Promise<void> {
     if (input.sessionId) this.bindings.set(input.sessionId, { ...input })
     if (input.sessionId && input.sessionKey) this.sessions.set(input.sessionKey, input.sessionId)
-    for (const listener of this.admissions) await listener({ ...input })
+    let chatOnlyReady = false
+    for (const listener of this.admissions) {
+      const prepared = { ...input, chatOnlyReady: false }
+      await listener(prepared)
+      chatOnlyReady ||= prepared.chatOnlyReady === true
+    }
+    // 订阅者仍只拿输入副本；仅回传准入确认，不接受它们改写来源或正文。
+    input.chatOnlyReady = chatOnlyReady
   }
 
   /**

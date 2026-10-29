@@ -7,6 +7,29 @@ import { QqBridgeEvents } from '../src/bridge-events.js'
 import { readPlatformMessageId } from '../src/plugin.js'
 import { OnebotMessageEvent } from '../src/onebot/types.js'
 
+it('returns chat isolation readiness across admission copies without changing trusted input', async () => {
+  const bridge = new QqBridgeEvents()
+  const input = { sessionId: 'qq-friend', sessionKey: 'private:3309902729', scope: 'private' as const,
+    owner: false, userId: 3309902729, input: '你好', chatOnlyReady: true }
+  await bridge.prepare(input)
+  expect(input.chatOnlyReady).toBe(false)
+  const subscription = bridge.subscribeAdmission(async prepared => {
+    expect(prepared).not.toBe(input)
+    prepared.chatOnlyReady = true
+    prepared.owner = true
+    prepared.input = '不应回传的正文'
+  })
+  bridge.subscribeAdmission(async () => {})
+  await bridge.prepare(input)
+  expect(input.chatOnlyReady).toBe(true)
+  expect(input.owner).toBe(false)
+  expect(input.input).toBe('你好')
+  expect(bridge.binding('qq-friend')).toMatchObject({ owner: false, input: '你好' })
+  subscription.dispose()
+  await bridge.prepare(input)
+  expect(input.chatOnlyReady).toBe(false)
+})
+
 function makeEvent(partial: Partial<OnebotMessageEvent> & { user_id: number | string; raw_message: string }): OnebotMessageEvent {
   return {
     post_type: 'message',

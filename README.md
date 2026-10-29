@@ -1,6 +1,6 @@
 # dsh-qq-bridge · QQ Remote Control for DSH
 
-本批适配版 `1.0.6-neko.10` 已完成本机验收，面向 DSH `0.2.1-rc.3`：使用 volatile Config、configForms 和原生 preset 声明。本机桌面与服务器 Web 通过各自 profile 安装，原 Linux setup 不作为桌面配置入口。
+本批适配版 `1.0.6-neko.11` 已完成本机验收，面向 DSH `0.2.1-rc.3`：使用 volatile Config、configForms 和原生 preset 声明。本机桌面与服务器 Web 通过各自 profile 安装，原 Linux setup 不作为桌面配置入口。
 
 QQ 入站按结构化消息段提取正文和图片，原始图片 CQ 码与下载地址不进入 DSH/记忆正文；附件准入在记忆准备前完成，单张图片失败会留下对应的未读取状态。纯文字中的 CQ 代码示例保留。
 
@@ -714,7 +714,7 @@ pnpm dsh web --patch /tmp/dsh-qq-bridge-agent.patch.yml \
 - 本 fork（个人）：`origin` → `https://github.com/lxl8182/dsh-qq-bridge`
 - 同步方式：`git fetch upstream && git merge upstream/main`；本地 `main` 直接开发并推送到 `origin/main`，不向 `upstream` 推送，不 force-push。
 
-本 fork 基于上游 `6e13f95` 开发，本批目标版本 `1.0.6-neko.10`（Windows 桌面版 DSH `0.2.1-rc.3` 本机适配）。MIT License 与原作者版权沿用上游，见 [LICENSE](LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+本 fork 基于上游 `6e13f95` 开发，本批目标版本 `1.0.6-neko.11`（Windows 桌面版 DSH `0.2.1-rc.3` 本机适配）。MIT License 与原作者版权沿用上游，见 [LICENSE](LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 许可与致谢
 
