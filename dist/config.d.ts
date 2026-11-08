@@ -68,6 +68,7 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         commandPrefix?: string | undefined;
     }>>;
     agent: z.ZodDefault<z.ZodObject<{
+        friendMemoryEnabled: z.ZodDefault<z.ZodBoolean>;
         /** DSH Web 的 agent preset;存在 agentPresets 服务时默认挂 QQ bridge 专用 preset。 */
         preset: z.ZodDefault<z.ZodOptional<z.ZodString>>;
         /** 驱动 agent 的 provider 路由(须有已注册适配器)。 */
@@ -114,6 +115,7 @@ declare const DshQqBridgeConfig: z.ZodObject<{
     }, "strip", z.ZodTypeAny, {
         model: string;
         preset: string;
+        friendMemoryEnabled: boolean;
         provider: string;
         models: string[];
         cwd: string;
@@ -130,6 +132,7 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         reasoningEffort?: string | undefined;
         model?: string | undefined;
         preset?: string | undefined;
+        friendMemoryEnabled?: boolean | undefined;
         provider?: string | undefined;
         models?: string[] | undefined;
         cwd?: string | undefined;
@@ -198,6 +201,7 @@ declare const DshQqBridgeConfig: z.ZodObject<{
     agent: {
         model: string;
         preset: string;
+        friendMemoryEnabled: boolean;
         provider: string;
         models: string[];
         cwd: string;
@@ -253,6 +257,7 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         reasoningEffort?: string | undefined;
         model?: string | undefined;
         preset?: string | undefined;
+        friendMemoryEnabled?: boolean | undefined;
         provider?: string | undefined;
         models?: string[] | undefined;
         cwd?: string | undefined;

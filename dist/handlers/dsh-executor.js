@@ -155,8 +155,9 @@ export class DshAgentExecutor {
      * @param sessionKey QQ 来源键。
      * @returns 这一轮应当使用的 DSH 会话 id;刚换过段时就是新的那个。
      */
-    async prepareSession(sessionKey) {
-        await this.maybeStartNewSegment(sessionKey);
+    async prepareSession(sessionKey, input) {
+        if (input)
+            await this.maybeStartNewSegment(sessionKey, input);
         return (await this.getOrCreateSessionAgent(sessionKey)).sessionId;
     }
     async prepareImages(images) {
@@ -293,7 +294,7 @@ export class DshAgentExecutor {
      * 在队列任务内部调用它会让后续消息绕过仍在收尾的这一次。单独的
      * `segmentSwitches` 表既能去重,也不干扰投递队列。
      */
-    async maybeStartNewSegment(sessionKey) {
+    async maybeStartNewSegment(sessionKey, input) {
         if (!this.opts.segmentPolicy?.shouldStartNewSegment)
             return;
         const inFlight = this.segmentSwitches.get(sessionKey);
@@ -301,7 +302,7 @@ export class DshAgentExecutor {
             await inFlight;
             return;
         }
-        const switchTask = this.runSegmentSwitch(sessionKey).finally(() => {
+        const switchTask = this.runSegmentSwitch(sessionKey, input).finally(() => {
             if (this.segmentSwitches.get(sessionKey) === switchTask)
                 this.segmentSwitches.delete(sessionKey);
         });
@@ -309,14 +310,14 @@ export class DshAgentExecutor {
         await switchTask;
     }
     /** 问一次策略、换一个会话、再通知一次。任何一步失败都只记录,不阻断聊天。 */
-    async runSegmentSwitch(sessionKey) {
+    async runSegmentSwitch(sessionKey, input) {
         const policy = this.opts.segmentPolicy;
         if (!policy?.shouldStartNewSegment)
             return;
-        const previousSessionId = this.sessions.get(sessionKey) ?? '';
+        const { sessionId: previousSessionId } = await this.getOrCreateSessionAgent(sessionKey);
         let reason;
         try {
-            reason = (await policy.shouldStartNewSegment(sessionKey, previousSessionId)) ?? undefined;
+            reason = (await policy.shouldStartNewSegment(sessionKey, previousSessionId, input)) ?? undefined;
         }
         catch (error) {
             // 判定失败不等于该换段:策略坏了应当保持原会话继续聊天,而不是每轮换一次。
@@ -332,7 +333,7 @@ export class DshAgentExecutor {
         if (!policy.carryOverText)
             return;
         try {
-            await policy.carryOverText(sessionKey, previousSessionId, sessionId);
+            await policy.carryOverText(sessionKey, previousSessionId, sessionId, reason);
         }
         catch (error) {
             // 通知失败只会让新段少几句旧话,不影响这一轮能不能回。

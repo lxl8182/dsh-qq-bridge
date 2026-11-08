@@ -39,6 +39,7 @@ const DshQqBridgeConfig = z.object({
     .default({ adminQq: 0 }),
   agent: z
     .object({
+      friendMemoryEnabled: z.boolean().default(false),
       /** DSH Web 的 agent preset;存在 agentPresets 服务时默认挂 QQ bridge 专用 preset。 */
       preset: z.string().optional().default('dsh-qq-bridge'),
       /** 驱动 agent 的 provider 路由(须有已注册适配器)。 */

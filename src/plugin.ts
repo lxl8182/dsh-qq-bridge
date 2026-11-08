@@ -191,11 +191,13 @@ function createBridgeRuntime(
   let stop: (() => Promise<void>) | undefined
   let activeKey = ''
   let revision = 0
+  let friendMemoryEnabled = false
 
   return {
     async reconcile(cfg) {
       const nextRevision = ++revision
-      const nextKey = JSON.stringify(cfg)
+      friendMemoryEnabled = cfg.agent.friendMemoryEnabled
+      const nextKey = JSON.stringify({ ...cfg, agent: { ...cfg.agent, friendMemoryEnabled: false } })
       if (!isBridgeConfigured(cfg)) {
         if (stop) {
           const previous = stop
@@ -213,7 +215,7 @@ function createBridgeRuntime(
         await previous()
       }
       try {
-        const nextStop = await startQqBridge(ctx, cfg, events)
+        const nextStop = await startQqBridge(ctx, cfg, events, () => friendMemoryEnabled)
         if (nextRevision !== revision) {
           await nextStop()
           return
@@ -236,7 +238,10 @@ function createBridgeRuntime(
   }
 }
 
-async function startQqBridge(ctx: DshCtx, cfg: DshQqBridgeConfig, events?: QqBridgeEvents): Promise<() => Promise<void>> {
+async function startQqBridge(
+  ctx: DshCtx, cfg: DshQqBridgeConfig, events: QqBridgeEvents,
+  friendMemoryEnabled: () => boolean,
+): Promise<() => Promise<void>> {
   events?.setOutputLimit(cfg.agent.maxMessageLength)
   assertPlatformConfig(cfg)
   const officialMode = cfg.platform === 'official'
@@ -306,7 +311,9 @@ async function startQqBridge(ctx: DshCtx, cfg: DshQqBridgeConfig, events?: QqBri
   controlDispatcher.register(createSetPermissionControlHandler(executor))
   controlDispatcher.register(createSaveMemoControlHandler(customMemoryStore))
   controlDispatcher.register(createScheduleTaskControlHandler(taskScheduler))
-  const unregisterBridgeControl = router.register(new BridgeControlHandler(executor, executor, executor, executor))
+  const unregisterBridgeControl = router.register(new BridgeControlHandler(executor, executor, executor, {
+    startNewSession: sessionKey => agentHandler.startNewSession(sessionKey),
+  }))
 
   let unregisterShell: () => void = () => {}
   if (cfg.shell.enabled) {
@@ -319,6 +326,7 @@ async function startQqBridge(ctx: DshCtx, cfg: DshQqBridgeConfig, events?: QqBri
     officialMode ? cfg.official.appId : cfg.napcat.wsUrl])).digest('hex').slice(0, 24)
   const profile = ctx.get ? ctx.get('profileContext') as { home?: string } | undefined : ctx.profileContext
   const agentHandler = new AgentRpcHandler(executor, {
+    friendMemoryEnabled,
     deliveryStatePath: join(profile?.home ?? join(homedir(), '.dsh'),
       'plugins', 'dsh-qq-bridge', accountKey, 'delivery.json'),
     restoreContext: input => {

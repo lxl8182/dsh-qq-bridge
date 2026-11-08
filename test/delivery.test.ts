@@ -14,6 +14,54 @@ function context(send: NonNullable<HandlerContext['send']>): HandlerContext {
     payload: '真实用户输入', send, respond: async () => {} }
 }
 
+it('opening a new chat waits for the current reply to finish sending', async () => {
+  const order: string[] = []
+  let release!: () => void, started!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  const running = new Promise<void>(resolve => { started = resolve })
+  const executor = {
+    run: async () => { started(); await blocked; return '本轮回复' },
+    startNewSession: vi.fn(async () => { order.push('reset') }),
+  }
+  const handler = new AgentRpcHandler(executor, { ackMessage: '' })
+  try {
+    const turn = handler.run(context(async () => { order.push('sent'); return {} }))
+    await running
+    const reset = handler.startNewSession('private:owner')
+    expect(executor.startNewSession).not.toHaveBeenCalled()
+    release()
+    await turn
+    await reset
+    expect(order).toEqual(['sent', 'reset'])
+  } finally { release(); await handler.dispose() }
+})
+
+it('a friend reset survives restart and keeps the other friend bound to its original session', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'qq-reset-'))
+  const sessions = new Map([['private:friend', 'qq-old'], ['private:other', 'qq-other']])
+  const executor = { prepareSession: vi.fn(async (key: string) => sessions.get(key)!), run: async () => '回复',
+    startNewSession: async (key: string) => { sessions.set(key, 'qq-fresh') } }
+  const options = { deliveryStatePath: join(root, 'delivery.json'), ackMessage: '' }
+  const friend = { ...context(async () => ({})), owner: false, userId: 'friend' }
+  const before = new AgentRpcHandler(executor, options)
+  const after = new AgentRpcHandler(executor, options)
+  try {
+    await before.open()
+    await before.run(friend)
+    expect(executor.prepareSession).toHaveBeenCalledWith('private:friend',
+      { owner: false, text: friend.payload, imageCount: 0 })
+    await before.run({ ...friend, userId: 'other' })
+    await before.startNewSession('private:friend')
+    await before.dispose()
+    await after.open()
+    expect(after.restorableSessions()).toEqual([{ sessionKey: 'private:other', sessionId: 'qq-other' }])
+    expect(await readFile(options.deliveryStatePath, 'utf8')).toContain('真实用户输入')
+    await after.run({ ...friend, messageId: 'in-2' })
+    expect(after.restorableSessions()).toContainEqual({ sessionKey: 'private:friend', sessionId: 'qq-fresh' })
+    expect(after.restorableSessions()).toContainEqual({ sessionKey: 'private:other', sessionId: 'qq-other' })
+  } finally { await before.dispose(); await after.dispose(); await rm(root, { recursive: true, force: true }) }
+})
+
 it('external output retries keep stable indices and require a fresh permission check', async () => {
   const root = await mkdtemp(join(tmpdir(), 'qq-external-'))
   const sent: string[] = []
@@ -192,6 +240,7 @@ it('a split reply resumes only failed parts after restart without running the mo
     expect(attempts).toEqual(['abcd', 'efgh'])
     expect(reports.at(-1)).toMatchObject({ status: 'failed', generationStatus: 'completed' })
     expect(reports.at(-1)?.parts.filter(part => part.ok)).toHaveLength(1)
+    expect(reports.at(-1)?.parts.map(part => part.replyText)).toEqual(['abcd', undefined, undefined])
     await before.dispose()
     const after = new AgentRpcHandler(executor, options)
     await after.open()
@@ -199,6 +248,7 @@ it('a split reply resumes only failed parts after restart without running the mo
     expect(attempts).toEqual(['abcd', 'efgh', 'efgh', 'ij'])
     expect(executor.run).toHaveBeenCalledTimes(1)
     expect(reports.at(-1)?.parts.every(part => part.ok)).toBe(true)
+    expect(reports.at(-1)?.parts.map(part => part.replyText)).toEqual(['abcd', 'efgh', 'ij'])
     await after.dispose()
   } finally { await rm(root, { recursive: true, force: true }) }
 })

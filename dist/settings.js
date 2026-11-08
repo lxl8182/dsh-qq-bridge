@@ -147,6 +147,7 @@ async function buildQqBridgeSettingsSchema() {
             mode: z.union(['whitelist', 'open']).default('whitelist'),
         }),
         agent: z.object({
+            friendMemoryEnabled: z.boolean().default(false),
             preset: z.string().default('dsh-qq-bridge'),
             provider: z.string().default('deepseek-official'),
             model: z.string().default('deepseek-v4-flash'),

@@ -54,10 +54,12 @@ function createBridgeRuntime(ctx, events) {
     let stop;
     let activeKey = '';
     let revision = 0;
+    let friendMemoryEnabled = false;
     return {
         async reconcile(cfg) {
             const nextRevision = ++revision;
-            const nextKey = JSON.stringify(cfg);
+            friendMemoryEnabled = cfg.agent.friendMemoryEnabled;
+            const nextKey = JSON.stringify({ ...cfg, agent: { ...cfg.agent, friendMemoryEnabled: false } });
             if (!isBridgeConfigured(cfg)) {
                 if (stop) {
                     const previous = stop;
@@ -76,7 +78,7 @@ function createBridgeRuntime(ctx, events) {
                 await previous();
             }
             try {
-                const nextStop = await startQqBridge(ctx, cfg, events);
+                const nextStop = await startQqBridge(ctx, cfg, events, () => friendMemoryEnabled);
                 if (nextRevision !== revision) {
                     await nextStop();
                     return;
@@ -100,7 +102,7 @@ function createBridgeRuntime(ctx, events) {
         },
     };
 }
-async function startQqBridge(ctx, cfg, events) {
+async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
     events?.setOutputLimit(cfg.agent.maxMessageLength);
     assertPlatformConfig(cfg);
     const officialMode = cfg.platform === 'official';
@@ -164,7 +166,9 @@ async function startQqBridge(ctx, cfg, events) {
     controlDispatcher.register(createSetPermissionControlHandler(executor));
     controlDispatcher.register(createSaveMemoControlHandler(customMemoryStore));
     controlDispatcher.register(createScheduleTaskControlHandler(taskScheduler));
-    const unregisterBridgeControl = router.register(new BridgeControlHandler(executor, executor, executor, executor));
+    const unregisterBridgeControl = router.register(new BridgeControlHandler(executor, executor, executor, {
+        startNewSession: sessionKey => agentHandler.startNewSession(sessionKey),
+    }));
     let unregisterShell = () => { };
     if (cfg.shell.enabled) {
         unregisterShell = router.register(new ShellHandler(async (cmd) => ({ stdout: `(shell exec disabled) ${cmd}`, code: 1 })));
@@ -173,6 +177,7 @@ async function startQqBridge(ctx, cfg, events) {
         officialMode ? cfg.official.appId : cfg.napcat.wsUrl])).digest('hex').slice(0, 24);
     const profile = ctx.get ? ctx.get('profileContext') : ctx.profileContext;
     const agentHandler = new AgentRpcHandler(executor, {
+        friendMemoryEnabled,
         deliveryStatePath: join(profile?.home ?? join(homedir(), '.dsh'), 'plugins', 'dsh-qq-bridge', accountKey, 'delivery.json'),
         restoreContext: input => {
             const evt = { post_type: 'message', message_type: input.scope, user_id: input.userId,

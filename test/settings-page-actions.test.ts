@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 async function page(overrides: Record<string, unknown> = {}, rejectSave = false, buttonLabel = '启动/重启Napcat') {
   const source = (await readFile('src/client.js', 'utf8')).replace('exports.inject =',
-    'exports.testHelpers = { QqBridgeSettingsSection, configurationError, draftFrom, generalOpsFromDraft, generalConfigurationError, platformOpsFromDraft, detectNapcatTags }; exports.inject =')
+    'exports.testHelpers = { QqBridgeSettingsSection, configurationError, draftFrom, generalOpsFromDraft, generalConfigurationError, platformOpsFromDraft, detectNapcatTags, providerOptions, modelOptionsForProvider, reasoningOptions, selectAgentProvider, selectAgentModel }; exports.inject =')
   const states: unknown[] = []
   let helpers: any
   runInNewContext(source, { window: { __ModuleLoader__: { load({ factory }: any) {
@@ -104,8 +104,12 @@ describe('settings page actions', () => {
     expect(helpers.generalConfigurationError(draft)).toBe('')
     expect(helpers.configurationError(draft)).toContain('AppID')
     const ops = helpers.generalOpsFromDraft(draft)
+    expect(ops).toContainEqual({ op: 'set', path: ['agent', 'friendMemoryEnabled'], value: false })
+    draft.agent.friendMemoryEnabled = true
+    expect(helpers.generalOpsFromDraft(draft))
+      .toContainEqual({ op: 'set', path: ['agent', 'friendMemoryEnabled'], value: true })
     expect(ops.map((op: any) => op.path.join('.'))).toEqual([
-      'agent.provider', 'agent.model', 'agent.cwd',
+      'agent.provider', 'agent.model', 'agent.reasoningEffort', 'agent.cwd', 'agent.friendMemoryEnabled',
       'access.mode', 'access.groupAllowlist', 'permissionDefault', 'notifications.agentReply.enabled',
     ])
     expect(JSON.stringify(ops)).not.toContain('unsaved')
@@ -117,6 +121,43 @@ describe('settings page actions', () => {
     expect(lists.find((op: any) => op.path.join('.') === 'access.allowlist').value).toEqual([10002, 10003])
     expect(lists.find((op: any) => op.path.join('.') === 'access.groupAllowlist').value).toEqual([90001, 90002])
     expect(helpers.platformOpsFromDraft(draft, undefined, true).some((op: any) => op.path[0] === 'official')).toBe(false)
+  })
+
+  it('uses the Host catalog for custom providers, models and model-specific reasoning levels', async () => {
+    const { helpers } = await page()
+    const catalog = { groups: [{ id: 'custom-cloud', models: [
+      { id: 'vision-chat', reasoning: { efforts: [{ id: 'off' }, { id: 'medium' }, { id: 'high' }] } },
+      { id: 'quick-chat', reasoning: { efforts: [{ id: 'low' }] } },
+    ] }] }
+    expect(helpers.providerOptions(catalog, 'custom-cloud')).toEqual(['custom-cloud'])
+    expect(helpers.modelOptionsForProvider(catalog, 'custom-cloud', 'vision-chat')).toEqual(['vision-chat', 'quick-chat'])
+    expect(helpers.reasoningOptions(catalog, 'custom-cloud', 'vision-chat', 'high')).toEqual(['', 'off', 'medium', 'high'])
+    expect(helpers.reasoningOptions(catalog, 'custom-cloud', 'quick-chat', '')).toEqual(['', 'low'])
+  })
+
+  it('selects a valid model on provider changes and clears incompatible reasoning levels', async () => {
+    const { helpers } = await page()
+    const draft = helpers.draftFrom({ agent: { provider: 'old-cloud', model: 'old-model', reasoningEffort: 'high' } })
+    const catalog = { groups: [{ id: 'new-cloud', models: [
+      { id: 'new-model', reasoning: { efforts: [{ id: 'high' }] } },
+      { id: 'quick-model', reasoning: { efforts: [{ id: 'low' }] } },
+    ] }] }
+    const changed = helpers.selectAgentProvider(draft, catalog, 'new-cloud')
+    expect(changed.agent).toMatchObject({ provider: 'new-cloud', model: 'new-model', reasoningEffort: 'high' })
+    expect(helpers.selectAgentModel(changed, catalog, 'new-cloud', 'quick-model').agent.reasoningEffort).toBe('')
+    expect(helpers.selectAgentProvider(changed, { groups: [{ id: 'empty-cloud', models: [] }] }, 'empty-cloud').agent.model).toBe('')
+  })
+
+  it('preserves the reasoning selection in both automatic saves and platform start saves', async () => {
+    const { helpers, value } = await page({ agent: { reasoningEffort: 'high' } })
+    const draft = helpers.draftFrom(value)
+    expect(draft.agent.reasoningEffort).toBe('high')
+    for (const effort of ['high', 'off', '']) {
+      draft.agent.reasoningEffort = effort
+      expect(helpers.generalOpsFromDraft(draft)).toContainEqual({ op: 'set', path: ['agent', 'reasoningEffort'], value: effort })
+      const agentOp = helpers.platformOpsFromDraft(draft, undefined, true).find((op: any) => op.path.join('.') === 'agent')
+      expect(agentOp.value.reasoningEffort).toBe(effort)
+    }
   })
 
   it('checks installation, runtime and login sequentially with intermediate checking tags', async () => {

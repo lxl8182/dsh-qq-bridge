@@ -2,6 +2,7 @@ import { MessageTargetId, OnebotMessageEvent, PlatformReplyTarget } from './oneb
 import { AccessGate } from './security.js'
 import { type ImageSource } from './onebot/images.js'
 import { normalizeInboundMessage } from './onebot/message.js'
+import { NEW_SESSION_COMMAND } from './handlers/model-control.js'
 
 /**
  * handler 上下文:暴露来源信息与便捷回发能力。
@@ -170,7 +171,8 @@ export class MessageRouter {
 
     let consumed = false
     for (const handler of this.handlers.values()) {
-      if ((!ctx.owner || scope === 'group') && handler.name !== 'agent') continue
+      const resetOwnPrivateChat = scope === 'private' && payload === NEW_SESSION_COMMAND && handler.name === 'bridge-control'
+      if ((!ctx.owner || scope === 'group') && handler.name !== 'agent' && !resetOwnPrivateChat) continue
       if (handler.test(payload)) {
         consumed = true
         await handler.run(ctx)

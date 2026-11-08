@@ -1,4 +1,4 @@
-import { AgentExecutor } from './agent.js';
+import type { AgentExecutor, DshSegmentInput } from './agent.js';
 import type { InboundImage } from '../onebot/images.js';
 import { BridgeModelInfo, BridgeModelSelection, BridgeModelSelectionRef, PermissionController, SessionLifecycleController } from './model-control.js';
 /**
@@ -74,22 +74,24 @@ export interface DshSegmentPolicy {
      * 也不会把一条正在生成的消息切成两段。
      *
      * @param sessionKey QQ 来源键。
-     * @param sessionId 换段前这一轮原本要用的 DSH 会话 id(尚未建会话时为空串)。
+     * @param sessionId 换段前这一轮原本要用的 DSH 会话 id。
+     * @param input 本轮文字和已完成准入的图片数量。
      * @returns 需要换段时返回非空原因(写进日志/状态),否则 undefined。
      */
-    shouldStartNewSegment?(sessionKey: string, sessionId: string): string | undefined | Promise<string | undefined>;
+    shouldStartNewSegment?(sessionKey: string, sessionId: string, input?: DshSegmentInput): string | undefined | Promise<string | undefined>;
     /**
      * 「换段已经发生」的通知,也是带上旧话的唯一时机。
      *
      * 调用时机:换段**已完成之后**、这一轮真正投给模型之前。策略在这里开新段、
      * 记下旧会话 id、准备好带进新段的那几句旧话;桥接层不保存也不解释它的内容。
-     * 返回空串表示不带入。这里是通知而不是再次判定:再问一次会让两次判定不一致。
+     * 复用本次判定的原因，后续采用由记忆插件完成。
      *
      * @param sessionKey QQ 来源键。
      * @param previousSessionId 刚被归档的旧会话 id。
      * @param sessionId 新会话 id。
+     * @param reason 本次换段原因。
      */
-    carryOverText?(sessionKey: string, previousSessionId: string, sessionId: string): void | Promise<void>;
+    carryOverText?(sessionKey: string, previousSessionId: string, sessionId: string, reason?: string): void | Promise<void>;
 }
 /**
  * DSH 服务句柄 —— 由插件注入,mock 可注入。
@@ -173,7 +175,7 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
      * @param sessionKey QQ 来源键。
      * @returns 这一轮应当使用的 DSH 会话 id;刚换过段时就是新的那个。
      */
-    prepareSession(sessionKey: string): Promise<string>;
+    prepareSession(sessionKey: string, input?: DshSegmentInput): Promise<string>;
     prepareImages(images: readonly InboundImage[]): Promise<InboundImage[]>;
     retireSessionId(sessionId: string): Promise<void>;
     /**

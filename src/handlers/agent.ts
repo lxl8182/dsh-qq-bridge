@@ -18,6 +18,13 @@ import { replyParts } from '../message-format.js'
  */
 export const DEFAULT_QQ_REPLY_STYLE_SKILL_NAME = 'qq-session-reply-style'
 
+export interface DshSegmentInput {
+  text: string
+  imageCount: number
+  owner?: boolean
+  friendMemoryEnabled?: boolean
+}
+
 /** qqReplyStyleSkill 的解析结果。仅为配置兼容保留,不再影响交给 Agent 的内容。 */
 export interface QqReplyStyleSkillOptions {
   enabled?: boolean
@@ -42,7 +49,8 @@ export function splitText(text: string, maxLen: number): string[] {
  */
 export interface AgentExecutor {
   prepareImages?(images: readonly InboundImage[]): Promise<InboundImage[]>
-  prepareSession?(sessionKey: string): Promise<string>
+  prepareSession?(sessionKey: string, input?: DshSegmentInput): Promise<string>
+  startNewSession?(sessionKey: string): Promise<void>
   /**
    * 把 payload 交给一个 DSH Agent 会话处理,返回最终文本。
    * @param sessionKey 用于把同一 QQ 会话映射到固定 AgentId(多轮上下文)
@@ -98,8 +106,8 @@ export interface QqTurnReport {
   input: string
   /** 桥接层解析控制块后的最终对外文字;没有可发文字时为空串。 */
   reply: string
-  /** 实际发送成功的分段,含平台消息 id(平台未提供时缺省)。 */
-  parts: Array<{ index: number; chars: number; platformId?: string; ok: boolean; error?: string }>
+  /** 分段投递结果。平台已接受的普通回复段另外带实际发送文字。 */
+  parts: Array<{ index: number; chars: number; platformId?: string; ok: boolean; error?: string; replyText?: string }>
   status: 'completed' | 'failed' | 'interrupted'
   generationStatus?: 'completed' | 'failed' | 'interrupted'
   /** 失败/中断原因;成功时缺省。 */
@@ -160,6 +168,7 @@ export class AgentRpcHandler implements Handler {
       /** 一轮真实结束后报告对外事实;不含思考过程、工具日志或内部提示。 */
       observeTurn?: AgentTurnObserver
       prepareTurn?: (input: QqTurnInput) => Promise<void>
+      friendMemoryEnabled?: () => boolean
       waitForOutput?: (sessionKey: string) => Promise<void>
       deliveryStatePath?: string
       restoreContext?: (input: SavedInput) => HandlerContext | undefined
@@ -213,6 +222,20 @@ export class AgentRpcHandler implements Handler {
       else if (turn.sessionId) sessions.set(key, turn.sessionId)
     }
     return [...sessions].map(([sessionKey, sessionId]) => ({ sessionKey, sessionId }))
+  }
+
+  async startNewSession(sessionKey: string): Promise<void> {
+    if (!this.executor.startNewSession) throw new Error('当前 host 不支持新开会话。')
+    await this.enqueue(sessionKey, async () => {
+      await this.opts.waitForOutput?.(sessionKey)
+      for (const turn of Object.values(this.delivery.turns)) {
+        if (sessionKeyOf(turn.input) !== sessionKey || turn.state === 'waiting') continue
+        turn.retired = true
+        turn.state = 'complete'
+      }
+      await this.delivery.save()
+      await this.executor.startNewSession!(sessionKey)
+    })
   }
 
   async retireSession(sessionId: string): Promise<void> {
@@ -356,6 +379,7 @@ export class AgentRpcHandler implements Handler {
       turn.report = { ...turn.report,
         status: turn.state === 'complete' ? 'completed' : 'failed',
         parts: parts.map((part, index) => ({ index, chars: Array.from(part.text).length,
+          ...(part.state === 'sent' ? { replyText: part.text } : {}),
           ok: part.state === 'sent', ...(part.platformId === undefined ? {} : { platformId: part.platformId }),
           ...(part.error === undefined ? {} : { error: part.error }) })),
       }
@@ -378,7 +402,7 @@ export class AgentRpcHandler implements Handler {
     ctx: HandlerContext,
     chunk: string,
     kind: 'reply' | 'control' = 'control',
-  ): Promise<Array<{ index: number; chars: number; platformId?: string; ok: boolean; error?: string }>> {
+  ): Promise<QqTurnReport['parts']> {
     const plan = replyParts(chunk, this.opts.maxMessageLength ?? 4500, kind === 'reply')
     const staged: DeliveryPart[] = plan.parts.map(text => ({ text, kind, state: 'pending' }))
     const turn = this.active.get(ctx)
@@ -388,6 +412,7 @@ export class AgentRpcHandler implements Handler {
     }
     await this.sendPending(ctx, staged)
     return staged.map((part, index) => ({ index, chars: Array.from(part.text).length, ok: part.state === 'sent',
+      ...(kind === 'reply' && part.state === 'sent' ? { replyText: part.text } : {}),
       ...(part.platformId === undefined ? {} : { platformId: part.platformId }),
       ...(part.error === undefined ? {} : { error: part.error }) }))
   }
@@ -467,11 +492,14 @@ export class AgentRpcHandler implements Handler {
       images = this.executor.prepareImages ? await this.executor.prepareImages(images) : images
       ctx.payload = imageStatusText(ctx.payload, ctx.images ?? [], images)
       payload = ctx.payload
-      const sessionId = await this.executor.prepareSession?.(sessionKey)
+      const friendMemoryEnabled = this.opts.friendMemoryEnabled?.()
+      const memorySetting = friendMemoryEnabled === undefined ? {} : { friendMemoryEnabled }
+      const sessionId = await this.executor.prepareSession?.(sessionKey, ctx.scope === 'private'
+        ? { text: payload, imageCount: images.length, owner: ctx.owner, ...memorySetting } : undefined)
       const stored = this.active.get(ctx)
       if (stored) { stored.sessionId = sessionId; stored.input.payload = payload; await this.delivery.save() }
       await this.opts.prepareTurn?.({ sessionKey, sessionId, scope: ctx.scope, owner: ctx.owner,
-        userId: ctx.userId, groupId: ctx.groupId, messageId: ctx.messageId, input: ctx.payload })
+        userId: ctx.userId, groupId: ctx.groupId, messageId: ctx.messageId, input: ctx.payload, ...memorySetting })
       if (this.stopped) return
       if (stored) { stored.state = 'running'; await this.delivery.save() }
       if (ackMessage) await this.respondChunk(ctx, ackMessage)
@@ -528,7 +556,7 @@ export class AgentRpcHandler implements Handler {
     sessionKey: string,
     payload: string,
     reply: string,
-    parts: Array<{ index: number; chars: number; platformId?: string; ok: boolean; error?: string }>,
+    parts: QqTurnReport['parts'],
     outcome: { status: 'completed' | 'failed' | 'interrupted'; generationStatus?: 'completed' | 'failed' | 'interrupted'; reason?: string },
   ): void {
     if (!this.opts.observeTurn) return
@@ -576,7 +604,7 @@ export class AgentRpcHandler implements Handler {
     options: { report?: HandlerContext; remember?: boolean; offset?: number } = {},
   ): Promise<{
     reply: string
-    parts: Array<{ index: number; chars: number; platformId?: string; ok: boolean; error?: string }>
+    parts: QqTurnReport['parts']
     status: 'completed' | 'failed'
   }> {
     const dispatcher = ctx.owner && ctx.scope === 'private' ? this.opts.controlDispatcher : undefined
@@ -595,7 +623,7 @@ export class AgentRpcHandler implements Handler {
     }
 
     const parsed = parseQqControlBlocks(spelled.visibleText)
-    const parts: Array<{ index: number; chars: number; platformId?: string; ok: boolean; error?: string }> = []
+    const parts: QqTurnReport['parts'] = []
     let offset = options.offset ?? 0
     for (const error of parsed.errors) {
       const sent = await this.respondChunk(ctx, error)

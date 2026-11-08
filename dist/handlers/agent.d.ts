@@ -11,6 +11,12 @@ import { type InboundImage } from '../onebot/images.js';
  * QQ 入站消息的原文逐字交给 Agent,不附加来源说明、临时风格标记或自动 skill 调用。
  */
 export declare const DEFAULT_QQ_REPLY_STYLE_SKILL_NAME = "qq-session-reply-style";
+export interface DshSegmentInput {
+    text: string;
+    imageCount: number;
+    owner?: boolean;
+    friendMemoryEnabled?: boolean;
+}
 /** qqReplyStyleSkill 的解析结果。仅为配置兼容保留,不再影响交给 Agent 的内容。 */
 export interface QqReplyStyleSkillOptions {
     enabled?: boolean;
@@ -28,7 +34,8 @@ export declare function splitText(text: string, maxLen: number): string[];
  */
 export interface AgentExecutor {
     prepareImages?(images: readonly InboundImage[]): Promise<InboundImage[]>;
-    prepareSession?(sessionKey: string): Promise<string>;
+    prepareSession?(sessionKey: string, input?: DshSegmentInput): Promise<string>;
+    startNewSession?(sessionKey: string): Promise<void>;
     /**
      * 把 payload 交给一个 DSH Agent 会话处理,返回最终文本。
      * @param sessionKey 用于把同一 QQ 会话映射到固定 AgentId(多轮上下文)
@@ -82,13 +89,14 @@ export interface QqTurnReport {
     input: string;
     /** 桥接层解析控制块后的最终对外文字;没有可发文字时为空串。 */
     reply: string;
-    /** 实际发送成功的分段,含平台消息 id(平台未提供时缺省)。 */
+    /** 分段投递结果。平台已接受的普通回复段另外带实际发送文字。 */
     parts: Array<{
         index: number;
         chars: number;
         platformId?: string;
         ok: boolean;
         error?: string;
+        replyText?: string;
     }>;
     status: 'completed' | 'failed' | 'interrupted';
     generationStatus?: 'completed' | 'failed' | 'interrupted';
@@ -147,6 +155,7 @@ export declare class AgentRpcHandler implements Handler {
         /** 一轮真实结束后报告对外事实;不含思考过程、工具日志或内部提示。 */
         observeTurn?: AgentTurnObserver;
         prepareTurn?: (input: QqTurnInput) => Promise<void>;
+        friendMemoryEnabled?: () => boolean;
         waitForOutput?: (sessionKey: string) => Promise<void>;
         deliveryStatePath?: string;
         restoreContext?: (input: SavedInput) => HandlerContext | undefined;
@@ -162,6 +171,7 @@ export declare class AgentRpcHandler implements Handler {
         sessionKey: string;
         sessionId: string;
     }>;
+    startNewSession(sessionKey: string): Promise<void>;
     retireSession(sessionId: string): Promise<void>;
     private enqueue;
     retryPending(): Promise<void>;

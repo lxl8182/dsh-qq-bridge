@@ -9,12 +9,8 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
     const NS = "dsh-qq-bridge";
     const NAPCAT_CHANNEL = "/dsh-qq-bridge-napcat";
-    const PROVIDER_OPTIONS = ["deepseek-official"];
-    const MODEL_OPTIONS_BY_PROVIDER = {
-      "deepseek-official": ["deepseek-v4-flash", "deepseek-v4-pro"],
-    };
 
-    exports.inject = ["slots", "connection", "remote", "configForms"];
+    exports.inject = ["slots", "connection", "remote", "remote.session", "configForms"];
     exports.apply = function apply(ctx) {
       const connection = ctx.get("connection");
       const form = ctx.configForms.get(NS);
@@ -27,6 +23,7 @@ window.__ModuleLoader__.load({
         scope,
         api: connection.api,
         rpc: connection.rpc,
+        remote: ctx.remote,
       });
       ctx.slots.inject("settings.section", () => ctx.slots.register({
         name: "settings.section",
@@ -50,6 +47,26 @@ window.__ModuleLoader__.load({
       const [message, setMessage] = React.useState("");
       const [napcatStatus, setNapcatStatus] = React.useState({ state: "idle", message: "正在等待检测 NapCat 状态。" });
       const [hostInfo, setHostInfo] = React.useState({ homeDir: "" });
+      const [modelCatalog, setModelCatalog] = React.useState({ groups: [], status: "loading", error: "" });
+
+      React.useEffect(() => {
+        let alive = true;
+        let revision = 0;
+        const refresh = async () => {
+          const current = ++revision;
+          try {
+            const response = await props.remote.session.modelCatalog();
+            if (!response.ok) throw new Error(response.error.message);
+            if (alive && revision === current) setModelCatalog({ ...response.value, status: "ready", error: "" });
+          } catch (error) {
+            if (alive && revision === current) setModelCatalog((prev) => ({ ...prev, status: "error", error: error instanceof Error ? error.message : String(error) }));
+          }
+        };
+        void refresh();
+        const disposers = ["llm/adapters-updated", "settings/document-updated", "credentials/record-updated", "credentials/reference-updated"]
+          .map((event) => props.remote.$on(event, refresh));
+        return () => { alive = false; for (const dispose of disposers) dispose(); };
+      }, [props.remote]);
 
       React.useEffect(() => props.scope.subscribe(() => {
         const next = props.scope.getSnapshot();
@@ -139,11 +156,11 @@ window.__ModuleLoader__.load({
       };
       const updateAgentProvider = (provider) => {
         setGeneralDirty(true);
-        setDraft((prev) => {
-          const models = modelOptionsForProvider(provider, prev.agent.model);
-          const model = models.includes(prev.agent.model) ? prev.agent.model : models[0] || prev.agent.model;
-          return setPath(setPath(prev, ["agent", "provider"], provider), ["agent", "model"], model);
-        });
+        setDraft((prev) => selectAgentProvider(prev, modelCatalog, provider));
+      };
+      const updateAgentModel = (model) => {
+        setGeneralDirty(true);
+        setDraft((prev) => selectAgentModel(prev, modelCatalog, prev.agent.provider, model));
       };
       const persist = async (ops) => {
         const latest = props.scope.getSnapshot();
@@ -280,12 +297,19 @@ window.__ModuleLoader__.load({
           h("h3", { style: styles.sectionTitle }, "通用配置"),
           h("p", { style: styles.subtle }, "配置应用后重建桥接服务，无需重启 DSH 或 NapCat；现有 QQ Agent 会话会被释放。"),
           h("div", { style: styles.grid },
-            selectField("Provider", draft.agent.provider, providerOptions(draft.agent.provider), disabled, updateAgentProvider),
-            selectField("Model", draft.agent.model, modelOptionsForProvider(draft.agent.provider, draft.agent.model), disabled, (value) => update(["agent", "model"], value)),
+            selectField("Provider", draft.agent.provider, providerOptions(modelCatalog, draft.agent.provider), disabled || modelCatalog.status !== "ready", updateAgentProvider),
+            selectField("Model", draft.agent.model, modelOptionsForProvider(modelCatalog, draft.agent.provider, draft.agent.model), disabled || modelCatalog.status !== "ready", updateAgentModel),
+            selectField("思考强度", draft.agent.reasoningEffort, reasoningOptions(modelCatalog, draft.agent.provider, draft.agent.model, draft.agent.reasoningEffort), disabled || modelCatalog.status !== "ready", (value) => update(["agent", "reasoningEffort"], value), { "": "模型默认" }),
             textField("默认工作目录", draft.agent.cwd, disabled, (value) => update(["agent", "cwd"], value)),
             readonlyField("超时", "不限制"),
           ),
+          modelCatalog.error ? h("p", { role: "alert", style: styles.error }, "模型目录加载失败：" + modelCatalog.error) : null,
+          h("p", { style: styles.subtle }, "日常聊天建议 medium；复杂问题可用 high。可选档位由当前模型提供，模型默认沿用提供方设置。"),
           h("p", { style: styles.subtle }, "回复完成后按自然换行连发；代码与清单保持完整，推理过程不会发送。"),
+          h("label", { style: styles.subtle },
+            h("input", { type: "checkbox", checked: draft.agent.friendMemoryEnabled, disabled,
+              onChange: event => update(["agent", "friendMemoryEnabled"], event.currentTarget.checked) }),
+            " 好友记忆与续聊压缩（仅 RIN 已授权的好友，下一轮生效）"),
           h("h4", { style: styles.sectionTitle }, "安全与权限"),
           h("div", { style: styles.grid },
             selectField("访问模式", draft.access.mode, ["whitelist", "open"], disabled, (value) => update(["access", "mode"], value)),
@@ -646,7 +670,7 @@ window.__ModuleLoader__.load({
       return textField(label, value === undefined ? "" : String(value), disabled, (next) => onChange(Number(next) || 0), "number", extra);
     }
 
-    function selectField(label, value, options, disabled, onChange) {
+    function selectField(label, value, options, disabled, onChange, labels = {}) {
       return h("label", { style: styles.field },
         h("span", { style: styles.label }, label),
         h("select", {
@@ -654,16 +678,37 @@ window.__ModuleLoader__.load({
           disabled,
           style: styles.input,
           onChange: (event) => onChange(event.currentTarget.value),
-        }, options.map((option) => h("option", { key: option, value: option }, option))),
+        }, options.map((option) => h("option", { key: option, value: option }, labels[option] ?? option))),
       );
     }
 
-    function providerOptions(current) {
-      return withCurrentOption(PROVIDER_OPTIONS, current);
+    function providerOptions(catalog, current) {
+      return withCurrentOption(catalog.groups.map((group) => group.id), current);
     }
 
-    function modelOptionsForProvider(provider, current) {
-      return withCurrentOption(MODEL_OPTIONS_BY_PROVIDER[provider] || [], current);
+    function modelsForProvider(catalog, provider) {
+      return catalog.groups.find((group) => group.id === provider)?.models ?? [];
+    }
+
+    function modelOptionsForProvider(catalog, provider, current) {
+      return withCurrentOption(modelsForProvider(catalog, provider).map((model) => model.id), current);
+    }
+
+    function reasoningOptions(catalog, provider, model, current) {
+      const info = modelsForProvider(catalog, provider).find((entry) => entry.id === model);
+      return withCurrentOption(["", ...(info?.reasoning?.efforts ?? []).map((effort) => effort.id)], current);
+    }
+
+    function selectAgentModel(draft, catalog, provider, model) {
+      const choices = reasoningOptions(catalog, provider, model, "");
+      const reasoningEffort = choices.includes(draft.agent.reasoningEffort) ? draft.agent.reasoningEffort : "";
+      return { ...draft, agent: { ...draft.agent, provider, model, reasoningEffort } };
+    }
+
+    function selectAgentProvider(draft, catalog, provider) {
+      const models = modelsForProvider(catalog, provider).map((model) => model.id);
+      const model = models.includes(draft.agent.model) ? draft.agent.model : models[0] ?? "";
+      return selectAgentModel(draft, catalog, provider, model);
     }
 
     function withCurrentOption(options, current) {
@@ -757,8 +802,11 @@ window.__ModuleLoader__.load({
           mode: source.access?.mode === "open" ? "open" : "whitelist",
         },
         agent: {
+          preset: source.agent?.preset ?? "dsh-qq-bridge",
+          friendMemoryEnabled: source.agent?.friendMemoryEnabled === true,
           provider: source.agent?.provider ?? "deepseek-official",
           model: source.agent?.model ?? "deepseek-v4-flash",
+          reasoningEffort: source.agent?.reasoningEffort ?? "",
           cwd: displayCwd(source.agent?.cwd, homeDir),
         },
         selfLogInput: {
@@ -791,7 +839,7 @@ window.__ModuleLoader__.load({
 
     function generalOpsFromDraft(draft) {
       return [
-        ...["provider", "model", "cwd"].map((key) => set(["agent", key], draft.agent[key])),
+        ...["provider", "model", "reasoningEffort", "cwd", "friendMemoryEnabled"].map((key) => set(["agent", key], draft.agent[key])),
         set(["access", "mode"], draft.access.mode),
         ...(draft.platform === "napcat" ? [set(["access", "allowlist"], splitLines(draft.access.allowlistText).map(Number))] : []),
         set(["access", "groupAllowlist"], splitLines(draft.access.groupAllowlistText)
@@ -830,9 +878,11 @@ window.__ModuleLoader__.load({
         set(["access", "commandPrefix"], draft.access.commandPrefix),
         set(["access", "mode"], draft.access.mode),
         set(["agent"], {
-          preset: "dsh-qq-bridge",
+          friendMemoryEnabled: draft.agent.friendMemoryEnabled,
+          preset: draft.agent.preset,
           provider: draft.agent.provider,
           model: draft.agent.model,
+          reasoningEffort: draft.agent.reasoningEffort,
           cwd: draft.agent.cwd,
           maxMessageLength: 4500,
           ackMessage: "收到，正在处理...",

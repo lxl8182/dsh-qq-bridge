@@ -93,6 +93,21 @@ export class AgentRpcHandler {
         }
         return [...sessions].map(([sessionKey, sessionId]) => ({ sessionKey, sessionId }));
     }
+    async startNewSession(sessionKey) {
+        if (!this.executor.startNewSession)
+            throw new Error('当前 host 不支持新开会话。');
+        await this.enqueue(sessionKey, async () => {
+            await this.opts.waitForOutput?.(sessionKey);
+            for (const turn of Object.values(this.delivery.turns)) {
+                if (sessionKeyOf(turn.input) !== sessionKey || turn.state === 'waiting')
+                    continue;
+                turn.retired = true;
+                turn.state = 'complete';
+            }
+            await this.delivery.save();
+            await this.executor.startNewSession(sessionKey);
+        });
+    }
     async retireSession(sessionId) {
         for (const turn of Object.values(this.delivery.turns)) {
             if (turn.sessionId !== sessionId && turn.report?.sessionId !== sessionId)
@@ -261,6 +276,7 @@ export class AgentRpcHandler {
             turn.report = { ...turn.report,
                 status: turn.state === 'complete' ? 'completed' : 'failed',
                 parts: parts.map((part, index) => ({ index, chars: Array.from(part.text).length,
+                    ...(part.state === 'sent' ? { replyText: part.text } : {}),
                     ok: part.state === 'sent', ...(part.platformId === undefined ? {} : { platformId: part.platformId }),
                     ...(part.error === undefined ? {} : { error: part.error }) })),
             };
@@ -287,6 +303,7 @@ export class AgentRpcHandler {
         }
         await this.sendPending(ctx, staged);
         return staged.map((part, index) => ({ index, chars: Array.from(part.text).length, ok: part.state === 'sent',
+            ...(kind === 'reply' && part.state === 'sent' ? { replyText: part.text } : {}),
             ...(part.platformId === undefined ? {} : { platformId: part.platformId }),
             ...(part.error === undefined ? {} : { error: part.error }) }));
     }
@@ -368,7 +385,10 @@ export class AgentRpcHandler {
             images = this.executor.prepareImages ? await this.executor.prepareImages(images) : images;
             ctx.payload = imageStatusText(ctx.payload, ctx.images ?? [], images);
             payload = ctx.payload;
-            const sessionId = await this.executor.prepareSession?.(sessionKey);
+            const friendMemoryEnabled = this.opts.friendMemoryEnabled?.();
+            const memorySetting = friendMemoryEnabled === undefined ? {} : { friendMemoryEnabled };
+            const sessionId = await this.executor.prepareSession?.(sessionKey, ctx.scope === 'private'
+                ? { text: payload, imageCount: images.length, owner: ctx.owner, ...memorySetting } : undefined);
             const stored = this.active.get(ctx);
             if (stored) {
                 stored.sessionId = sessionId;
@@ -376,7 +396,7 @@ export class AgentRpcHandler {
                 await this.delivery.save();
             }
             await this.opts.prepareTurn?.({ sessionKey, sessionId, scope: ctx.scope, owner: ctx.owner,
-                userId: ctx.userId, groupId: ctx.groupId, messageId: ctx.messageId, input: ctx.payload });
+                userId: ctx.userId, groupId: ctx.groupId, messageId: ctx.messageId, input: ctx.payload, ...memorySetting });
             if (this.stopped)
                 return;
             if (stored) {

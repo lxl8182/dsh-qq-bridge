@@ -312,6 +312,26 @@ describe('dsh-qq-bridge — MessageRouter + AccessGate', () => {
     expect(sent).toEqual(['已为当前 QQ 聊天新开 Agent session。下一条消息会使用新的上下文。'])
   })
 
+  it('friends can reset only their own private chat while other controls and group resets stay blocked', async () => {
+    const gate = new AccessGate({ adminQq: 10001, allowlist: [10002, 10003], groupAllowlist: [90001], commandPrefix: '', mode: 'whitelist' })
+    const startNewSession = vi.fn(async () => {})
+    const run = vi.fn(async () => 'unexpected')
+    const router = new MessageRouter(gate, async () => {})
+    router.register(new BridgeControlHandler({} as never, undefined, undefined, { startNewSession }))
+    router.register(new AgentRpcHandler({ run }, { ackMessage: '', reservedCommands: ['/new-session', '/model', '/permission'] }))
+    expect(await router.route(makeEvent({ user_id: 10002, raw_message: '/new-session' }))).toBe(true)
+    expect(await router.route(makeEvent({ user_id: 10003, raw_message: '/new-session' }))).toBe(true)
+    expect(startNewSession.mock.calls).toEqual([['private:10002'], ['private:10003']])
+    for (const raw_message of ['/new-session private:10003', '/model other', '/permission danger-full-access']) {
+      expect(await router.route(makeEvent({ user_id: 10002, raw_message }))).toBe(false)
+    }
+    expect(await router.route(makeEvent({ user_id: 10004, raw_message: '/new-session' }))).toBe(false)
+    expect(await router.route(makeEvent({ user_id: 10002, message_type: 'group', group_id: 90001, self_id: 20001,
+      raw_message: '[CQ:at,qq=20001]/new-session' }))).toBe(false)
+    expect(startNewSession).toHaveBeenCalledTimes(2)
+    expect(run).not.toHaveBeenCalled()
+  })
+
   it('agent 输出 set_cwd 控制块时执行切目录且不回发原始控制块', async () => {
     const gate = new AccessGate({ adminQq: 10001, allowlist: [], commandPrefix: '', mode: 'whitelist' })
     const setCwd = vi.fn(async () => {})

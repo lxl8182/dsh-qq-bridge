@@ -1,4 +1,5 @@
 import { normalizeInboundMessage } from './onebot/message.js';
+import { NEW_SESSION_COMMAND } from './handlers/model-control.js';
 /**
  * C 骨架:消息分发器。注册 handler,按前缀 + 匹配路由。
  */
@@ -96,7 +97,8 @@ export class MessageRouter {
             return true;
         let consumed = false;
         for (const handler of this.handlers.values()) {
-            if ((!ctx.owner || scope === 'group') && handler.name !== 'agent')
+            const resetOwnPrivateChat = scope === 'private' && payload === NEW_SESSION_COMMAND && handler.name === 'bridge-control';
+            if ((!ctx.owner || scope === 'group') && handler.name !== 'agent' && !resetOwnPrivateChat)
                 continue;
             if (handler.test(payload)) {
                 consumed = true;

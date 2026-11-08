@@ -58,7 +58,7 @@ async function buildChain() {
   await client.connect()
   const outbound = await client.sendPrivate.bind(client) === undefined ? undefined : undefined
 
-  const gate = new AccessGate({ adminQq: 10001, allowlist: [], commandPrefix: '/dsh', mode: 'whitelist' })
+  const gate = new AccessGate({ adminQq: 10001, allowlist: [], groupAllowlist: [555], commandPrefix: '/dsh', mode: 'whitelist' })
   // 真实 outbound:私聊目标 = user_id,群聊目标 = group_id
   const outboundSender = async (scope: 'private' | 'group', targetId: number, text: string) => {
     if (scope === 'private') await client.sendPrivate(targetId, text)
@@ -152,7 +152,8 @@ describe('dsh-qq-bridge — M5 本地回环全链路', () => {
       message_type: 'group',
       user_id: 10001,
       group_id: 555,
-      raw_message: '/dsh team status',
+      self_id: 20001,
+      raw_message: '[CQ:at,qq=20001]/dsh team status',
       message_id: 3,
     })
     await new Promise((r) => setTimeout(r, 0))

@@ -3,6 +3,7 @@ import { DshAgentExecutor, DshRenderedAgent, DshSegmentPolicy } from '../src/han
 import type { BridgeModelSelectionRef } from '../src/handlers/model-control.js'
 
 const KEY = 'private:10001'
+const INPUT = { text: 'continue', imageCount: 1 }
 
 /**
  * 内存 mock。
@@ -73,9 +74,9 @@ describe('dsh-qq-bridge — 上下文分段原语', () => {
   it('没有注入策略时行为与接线前完全一致:一个来源只建一个会话', async () => {
     const { dsh, sessionIds, dropped } = makeMock()
     const executor = new DshAgentExecutor(dsh as never)
-    const first = await executor.prepareSession(KEY)
-    expect(await executor.prepareSession(KEY)).toBe(first)
-    expect(await executor.prepareSession(KEY)).toBe(first)
+    const first = await executor.prepareSession(KEY, INPUT)
+    expect(await executor.prepareSession(KEY, INPUT)).toBe(first)
+    expect(await executor.prepareSession(KEY, INPUT)).toBe(first)
     expect(sessionIds).toEqual([first])
     expect(dropped).toEqual([])
     expect(executor.getSessionVersion(KEY)).toBe(0)
@@ -87,11 +88,13 @@ describe('dsh-qq-bridge — 上下文分段原语', () => {
     const { dsh, sessionIds, dropped } = makeMock()
     const shouldStartNewSegment = vi.fn(() => undefined)
     const executor = new DshAgentExecutor(dsh as never, { segmentPolicy: { shouldStartNewSegment } })
-    await executor.prepareSession(KEY)
-    await executor.prepareSession(KEY)
+    await executor.prepareSession(KEY, INPUT)
+    await executor.prepareSession(KEY, INPUT)
     expect(shouldStartNewSegment).toHaveBeenCalledTimes(2)
     // 判定拿到的 sessionId 是「换段前这一轮本来要用的那个」,不是空串。
-    expect(shouldStartNewSegment).toHaveBeenLastCalledWith(KEY, sessionIds[0])
+    expect(shouldStartNewSegment).toHaveBeenLastCalledWith(KEY, sessionIds[0], INPUT)
+    await executor.prepareSession(KEY)
+    expect(shouldStartNewSegment).toHaveBeenCalledTimes(2)
     expect(sessionIds).toHaveLength(1)
     expect(dropped).toEqual([])
     await executor.disposeAll()
@@ -101,9 +104,9 @@ describe('dsh-qq-bridge — 上下文分段原语', () => {
     const { dsh, sessionIds, dropped } = makeMock()
     const policy = once()
     const executor = new DshAgentExecutor(dsh as never, { segmentPolicy: policy })
-    const before = await executor.prepareSession(KEY)
+    const before = await executor.prepareSession(KEY, INPUT)
     policy.enable()
-    const after = await executor.prepareSession(KEY)
+    const after = await executor.prepareSession(KEY, INPUT)
     // 关键不变量:换段那一轮必须已经挂在新会话上,否则这一轮还会读旧上下文。
     expect(after).not.toBe(before)
     expect(sessionIds).toEqual([before, after])
@@ -118,15 +121,15 @@ describe('dsh-qq-bridge — 上下文分段原语', () => {
     const policy = once()
     const carryOverText = vi.fn(async () => {})
     const executor = new DshAgentExecutor(dsh as never, { segmentPolicy: { ...policy, carryOverText } })
-    const first = await executor.prepareSession(KEY)
+    const first = await executor.prepareSession(KEY, INPUT)
     // 不换段时绝不通知:不换段就没有「该带什么旧话」这回事。
     expect(carryOverText).not.toHaveBeenCalled()
     policy.enable()
-    const second = await executor.prepareSession(KEY)
+    const second = await executor.prepareSession(KEY, INPUT)
     expect(carryOverText).toHaveBeenCalledTimes(1)
-    expect(carryOverText).toHaveBeenCalledWith(KEY, first, second)
+    expect(carryOverText).toHaveBeenCalledWith(KEY, first, second, 'budget')
     // 只在换段那一次通知,后续普通轮次不再通知。
-    await executor.prepareSession(KEY)
+    await executor.prepareSession(KEY, INPUT)
     expect(carryOverText).toHaveBeenCalledTimes(1)
     await executor.disposeAll()
   })
@@ -135,13 +138,13 @@ describe('dsh-qq-bridge — 上下文分段原语', () => {
     const { dsh, dropped } = makeMock()
     const policy = once()
     const executor = new DshAgentExecutor(dsh as never, { segmentPolicy: policy })
-    await executor.prepareSession(KEY)
+    await executor.prepareSession(KEY, INPUT)
     expect(executor.getSessionVersion(KEY)).toBe(0)
     policy.enable()
     const settled = await Promise.all([
-      executor.prepareSession(KEY),
-      executor.prepareSession(KEY),
-      executor.prepareSession(KEY),
+      executor.prepareSession(KEY, INPUT),
+      executor.prepareSession(KEY, INPUT),
+      executor.prepareSession(KEY, INPUT),
     ])
     // 三条并发只有第一次真正换了段,其余复用同一个新会话。
     expect(executor.getSessionVersion(KEY)).toBe(1)
@@ -155,8 +158,8 @@ describe('dsh-qq-bridge — 上下文分段原语', () => {
     const executor = new DshAgentExecutor(dsh as never, {
       segmentPolicy: { shouldStartNewSegment: () => { throw new Error('policy exploded') } },
     })
-    const first = await executor.prepareSession(KEY)
-    expect(await executor.prepareSession(KEY)).toBe(first)
+    const first = await executor.prepareSession(KEY, INPUT)
+    expect(await executor.prepareSession(KEY, INPUT)).toBe(first)
     expect(sessionIds).toHaveLength(1)
     expect(executor.getSessionVersion(KEY)).toBe(0)
     await executor.disposeAll()
@@ -171,10 +174,10 @@ describe('dsh-qq-bridge — 上下文分段原语', () => {
         carryOverText: () => { throw new Error('carry exploded') },
       },
     })
-    const before = await executor.prepareSession(KEY)
+    const before = await executor.prepareSession(KEY, INPUT)
     policy.enable()
     // 通知失败不能让换段本身回滚,更不能让这一轮失败。
-    const after = await executor.prepareSession(KEY)
+    const after = await executor.prepareSession(KEY, INPUT)
     expect(after).not.toBe(before)
     expect(executor.getSessionVersion(KEY)).toBe(1)
     await executor.disposeAll()
@@ -187,13 +190,13 @@ describe('dsh-qq-bridge — 上下文分段原语', () => {
 
     // 与生产调用顺序一致:agent.ts 每轮先 prepareSession(换段就在这里发生),
     // 再 executor.run。中间的 prepareTurn(记忆提交前置)也就发生在这两步之间。
-    await executor.prepareSession(KEY)
+    await executor.prepareSession(KEY, INPUT)
     await executor.run(KEY, '第一句')
     const before = executor.lastTurnIdentity(KEY)
     expect(before?.messageId).toBeTruthy()
 
     policy.enable()
-    const sessionIdThisTurn = await executor.prepareSession(KEY)
+    const sessionIdThisTurn = await executor.prepareSession(KEY, INPUT)
     expect(sessionIdThisTurn).not.toBe(before?.sessionId)
     // 换段后这一轮还要正常跑完并提交。
     expect(await executor.run(KEY, '第二句')).toBe('好。')
@@ -211,14 +214,14 @@ describe('dsh-qq-bridge — 上下文分段原语', () => {
   it('可以在 executor 建好之后再装上或卸下策略,卸下即回到原行为', async () => {
     const { dsh, sessionIds } = makeMock()
     const executor = new DshAgentExecutor(dsh as never)
-    const first = await executor.prepareSession(KEY)
+    const first = await executor.prepareSession(KEY, INPUT)
     // 宿主插件启用顺序不确定,所以必须支持后装。
     executor.setSegmentPolicy({ shouldStartNewSegment: () => 'budget' })
-    const second = await executor.prepareSession(KEY)
+    const second = await executor.prepareSession(KEY, INPUT)
     expect(second).not.toBe(first)
     // 卸下之后不再换段。
     executor.setSegmentPolicy(undefined)
-    expect(await executor.prepareSession(KEY)).toBe(second)
+    expect(await executor.prepareSession(KEY, INPUT)).toBe(second)
     expect(executor.lastSegmentSwitch(KEY)).toBeUndefined()
     expect(sessionIds).toHaveLength(2)
     await executor.disposeAll()
