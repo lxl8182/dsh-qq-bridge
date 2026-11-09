@@ -15,6 +15,10 @@ export interface FriendMemoryStatus {
     state: 'enabled' | 'off' | 'ungranted' | 'paused' | 'unavailable';
     checkedAt: string;
 }
+export interface QqResearchResult {
+    text: string;
+    history: string;
+}
 export interface QqTurnInput {
     /** 准入订阅者确认纯聊天隔离已安装；不来自 QQ 消息正文。 */
     chatOnlyReady?: boolean;
@@ -237,8 +241,8 @@ export declare class QqBridgeEvents {
         checkedAt: string;
         userId: string;
     }[];
-    setResearchResolver(resolver: (sessionId: string, text: string) => Promise<string | undefined>): () => void;
-    resolveResearch(sessionId: string, text: string): Promise<string | undefined>;
+    setResearchResolver(resolver: (sessionId: string, text: string) => Promise<QqResearchResult | undefined>): () => void;
+    resolveResearch(sessionId: string, text: string): Promise<QqResearchResult | undefined>;
     /**
      * 由宿主插件注册"主动给管理员发一条文字"的能力。
      *

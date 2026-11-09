@@ -129,7 +129,7 @@ it('delivers a bound session followup once, strips spells, and retries only its 
       { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '去做了。' }] } } }, end(1),
       { type: 'turn/start', data: { turn: 2 } },
       { type: 'user/message', data: { id: 'feedback-1', source: { kind: 'companion-spell' } } },
-      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'abcdefghij<执行>secret</执行>' }] } } }, end(2),
+      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'abcdefghij\n<执行>secret</执行>' }] } } }, end(2),
     ]
     listener({ id: sessionId, snapshotEvents: () => events }, end(1))
     listener({ id: 'unbound-session', snapshotEvents: () => events }, end(2))
@@ -156,10 +156,12 @@ it('delivers a bound session followup once, strips spells, and retries only its 
 })
 
 it('QQ stripping includes built-in, meta and learned names while retaining HTML and incomplete tags', () => {
-  const result = parseQqSpells('好了<b>粗体</b><执行>echo hi</执行><学咒语>说话 ||| 说明 ||| 执行 ||| echo {body}</学咒语><说话>你好</说话><忘掉咒语>说话</忘掉咒语><读取></读取>')
+  const result = parseQqSpells('好了<b>粗体</b>\n<执行>echo hi</执行>\n<学咒语>说话 ||| 说明 ||| 执行 ||| echo {body}</学咒语>\n<说话>你好</说话>\n<忘掉咒语>说话</忘掉咒语>\n<读取></读取>')
   expect(result.visibleText).toBe('好了<b>粗体</b>')
   expect(result.spells.map(spell => spell.spell)).toEqual(['执行', '学咒语', '说话', '忘掉咒语'])
   expect(parseQqSpells('<执行>还没写完').visibleText).toBe('<执行>还没写完')
+  const quoted = '> <执行>引用</执行>\n```xml\n<执行>代码</执行>\n```'
+  expect(parseQqSpells(quoted)).toEqual({ visibleText: quoted, spells: [] })
 })
 
 it('QQ only strips spells, never executes or sends the old terminal feedback', async () => {
@@ -167,7 +169,7 @@ it('QQ only strips spells, never executes or sends the old terminal feedback', a
   const dispatcher = new QqSpellDispatcher()
   dispatcher.register({ spell: '执行', run })
   const sent: string[] = [], reports: QqTurnReport[] = []
-  const handler = new AgentRpcHandler({ run: async () => '去看看。<执行>echo hi</执行><说话>你好</说话>' }, {
+  const handler = new AgentRpcHandler({ run: async () => '去看看。\n<执行>echo hi</执行>\n<说话>你好</说话>' }, {
     ackMessage: '', spellDispatcher: dispatcher, observeTurn: report => { reports.push(report) },
   })
   await handler.run(context(async text => { sent.push(text); return {} }))
@@ -183,7 +185,7 @@ it('persisted and retried QQ output excludes spell bodies and does not repeat ge
     const path = join(root, 'delivery.json')
     let attempts = 0
     const ctx = context(async () => { if (++attempts === 1) throw new Error('offline'); return { platformId: 'p1' } })
-    const executor = { run: vi.fn(async () => '已出发。<执行>private-command</执行>'),
+    const executor = { run: vi.fn(async () => '已出发。\n<执行>private-command</执行>'),
       prepareSession: async () => 'qq-test', lastTurnIdentity: () => ({ messageId: 'm1' }) }
     const handler = new AgentRpcHandler(executor, { ackMessage: '', deliveryStatePath: path, restoreContext: () => ctx })
     await handler.open()

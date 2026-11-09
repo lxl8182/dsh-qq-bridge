@@ -228,8 +228,8 @@ export class DshAgentExecutor {
             if (feedback) {
                 const id = `research:${user.id}`;
                 const afterFirst = surface.length;
-                agent.followup({ id, role: 'user', source: { kind: QQ_RESEARCH_SOURCE },
-                    content: [{ type: 'text', text: feedback }] });
+                agent.followup({ id, role: 'user', source: { kind: QQ_RESEARCH_SOURCE, history: feedback.history },
+                    content: [{ type: 'text', text: feedback.text }] });
                 await agent.whenIdle();
                 const continued = (await this.readEvents(agent, sessionId)).slice(afterFirst);
                 const index = continued.findIndex(event => {

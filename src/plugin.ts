@@ -523,7 +523,7 @@ export function makeDshExecutor(
   attachWorkspace?: (sessionId: string, cwd: string) => Promise<void>,
   llm?: () => DshLlmRuntime | undefined,
   commands?: () => DshCommandRuntime | undefined,
-  resolveResearch?: (sessionId: string, text: string) => Promise<string | undefined>,
+  resolveResearch?: QqBridgeEvents['resolveResearch'],
 ) {
   const handles = wireDsh(ctx, agentCfg, interactions, attachWorkspace)
   const modelOptions = {

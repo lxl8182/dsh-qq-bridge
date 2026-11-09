@@ -1,5 +1,6 @@
 import type { AgentExecutor, DshSegmentInput } from './agent.js'
 import type { InboundImage } from '../onebot/images.js'
+import type { QqResearchResult } from '../bridge-events.js'
 import { parseQqControlBlocks, parseQqSpells } from './control.js'
 import {
   BridgeModelInfo,
@@ -255,7 +256,7 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
       resolveModelSelection?: (selection: BridgeModelSelection) => Promise<BridgeModelSelection>
       listModels?: (provider: string) => Promise<BridgeModelInfo[]>
       executeCommand?: DshCommandExecutor
-      resolveResearch?: (sessionId: string, text: string) => Promise<string | undefined>
+      resolveResearch?: (sessionId: string, text: string) => Promise<QqResearchResult | undefined>
       /** 上下文分段端口;缺失时 executor 行为与未接线时完全一致。 */
       segmentPolicy?: DshSegmentPolicy
     } = {},
@@ -358,8 +359,8 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
       if (feedback) {
         const id = `research:${user.id}`
         const afterFirst = surface.length
-        agent.followup({ id, role: 'user', source: { kind: QQ_RESEARCH_SOURCE },
-          content: [{ type: 'text', text: feedback }] })
+        agent.followup({ id, role: 'user', source: { kind: QQ_RESEARCH_SOURCE, history: feedback.history },
+          content: [{ type: 'text', text: feedback.text }] })
         await agent.whenIdle()
         const continued = (await this.readEvents(agent, sessionId)).slice(afterFirst)
         const index = continued.findIndex(event => {

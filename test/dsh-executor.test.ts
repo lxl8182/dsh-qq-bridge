@@ -125,7 +125,7 @@ describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
         { type: 'turn/end', data: { turn, reason: { kind: 'completed' } } })
     }
     const followup = vi.fn((message: unknown) => complete(2, message, '我找到了一条试玩消息。'))
-    const resolveResearch = vi.fn(async () => '【终端反馈·查资料】试玩消息')
+    const resolveResearch = vi.fn(async () => ({ text: '【终端反馈·查资料】试玩消息', history: 'https://example.com/demo' }))
     const executor = new DshAgentExecutor({
       async getOrCreate() { return { followup, async whenIdle() {}, async dispose() {} } },
       async deliver() {
@@ -140,7 +140,9 @@ describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
     expect(identity?.messageId).toBe('owner-message')
     expect(resolveResearch).toHaveBeenCalledOnce()
     expect(resolveResearch).toHaveBeenCalledWith(identity?.sessionId, '<查资料>试玩消息</查资料>')
-    expect(followup).toHaveBeenCalledWith(expect.objectContaining({ source: { kind: 'companion-research' } }))
+    expect(followup).toHaveBeenCalledWith(expect.objectContaining({
+      source: { kind: 'companion-research', history: 'https://example.com/demo' },
+    }))
     await executor.disposeAll()
   })
 

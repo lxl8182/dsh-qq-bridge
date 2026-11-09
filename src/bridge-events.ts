@@ -20,6 +20,11 @@ export interface FriendMemoryStatus {
   checkedAt: string
 }
 
+export interface QqResearchResult {
+  text: string
+  history: string
+}
+
 export interface QqTurnInput {
   /** 准入订阅者确认纯聊天隔离已安装；不来自 QQ 消息正文。 */
   chatOnlyReady?: boolean
@@ -133,7 +138,7 @@ export class QqBridgeEvents {
   private readonly admissions = new Set<(input: QqTurnInput) => Promise<void>>()
   private readonly bindings = new Map<string, QqTurnInput>()
   private readonly friendMemory = new Map<string, FriendMemoryStatus>()
-  private researchResolver?: (sessionId: string, text: string) => Promise<string | undefined>
+  private researchResolver?: (sessionId: string, text: string) => Promise<QqResearchResult | undefined>
   /** 重启后恢复的合法拥有者身份;键是桥接自己生成的 sessionKey。 */
   private readonly restored = new Map<string, QqBindingRecord>()
   /** sessionKey → 本进程的 DSH 会话 id。DSH 会话 id 每次启动都会变。 */
@@ -414,12 +419,12 @@ export class QqBridgeEvents {
     return Array.from(this.friendMemory, ([userId, status]) => ({ userId, ...status })).reverse()
   }
 
-  setResearchResolver(resolver: (sessionId: string, text: string) => Promise<string | undefined>): () => void {
+  setResearchResolver(resolver: (sessionId: string, text: string) => Promise<QqResearchResult | undefined>): () => void {
     this.researchResolver = resolver
     return () => { if (this.researchResolver === resolver) this.researchResolver = undefined }
   }
 
-  async resolveResearch(sessionId: string, text: string): Promise<string | undefined> {
+  async resolveResearch(sessionId: string, text: string): Promise<QqResearchResult | undefined> {
     const binding = this.binding(sessionId)
     if (binding?.scope === 'private' && binding.owner) return await this.researchResolver?.(sessionId, text)
   }

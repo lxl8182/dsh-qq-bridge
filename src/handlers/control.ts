@@ -38,19 +38,23 @@ export function parseQqSpells(text: string): ParsedQqSpells {
     .replace(/<(?:下次联系|选题)>[\s\S]*$/u, '')
   const spells: QqSpell[] = []
   if (!source) return { visibleText: '', spells }
-  // 学来的咒语也使用 2–8 个中文字符的名字；剥离不依赖执行插件的模板台账。
-  const pattern = /<([\p{Script=Han}]{2,8})>([\s\S]*?)<\/\1>/gu
-  let last = 0
-  let visible = ''
-  let match: RegExpExecArray | null
-  while ((match = pattern.exec(source)) !== null) {
-    visible += source.slice(last, match.index)
+  const visible: string[] = []
+  let fence = ''
+  for (const line of source.split(/\r?\n/)) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line)
+    if (marker) {
+      if (!fence) fence = marker[1]
+      else if (marker[1].startsWith(fence) && !marker[2].trim()) fence = ''
+    }
+    const match = !fence && !marker && /^ {0,3}<([\p{Script=Han}]{2,8})>(.*?)<\/\1>[ \t]*$/u.exec(line)
+    if (!match || match[2].includes(`</${match[1]}>`) || match[2].includes(`<${match[1]}>`)) {
+      visible.push(line)
+      continue
+    }
     const body = match[2].trim()
     if (body) spells.push({ spell: match[1] as QqSpellName, body })
-    last = match.index + match[0].length
   }
-  visible += source.slice(last)
-  const visibleText = visible.replace(/\n{3,}/g, '\n\n').trim()
+  const visibleText = visible.join('\n').replace(/\n{3,}/g, '\n\n').trim()
   return { visibleText: visibleText === '[PASS]' ? '' : visibleText, spells }
 }
 
