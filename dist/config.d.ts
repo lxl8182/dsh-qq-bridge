@@ -215,6 +215,7 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         reasoningEffort?: string | undefined;
         timeoutMs?: number | undefined;
     };
+    enabled: boolean;
     napcat: {
         loginQq: number;
         autoRestart: boolean;
@@ -222,7 +223,6 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         guideDoc: string;
         token?: string | undefined;
     };
-    enabled: boolean;
     platform: "official" | "napcat";
     access: {
         mode: "whitelist" | "open";
@@ -270,6 +270,7 @@ declare const DshQqBridgeConfig: z.ZodObject<{
             skillName?: string | undefined;
         } | undefined;
     } | undefined;
+    enabled?: boolean | undefined;
     napcat?: {
         loginQq?: number | undefined;
         autoRestart?: boolean | undefined;
@@ -277,7 +278,6 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         token?: string | undefined;
         guideDoc?: string | undefined;
     } | undefined;
-    enabled?: boolean | undefined;
     platform?: "official" | "napcat" | undefined;
     access?: {
         adminQq: number;

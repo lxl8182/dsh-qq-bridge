@@ -2,7 +2,7 @@ import { it, expect, vi } from 'vitest'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { AgentRpcHandler, type QqTurnReport } from '../src/handlers/agent.js'
+import { AgentRpcHandler, type DshSegmentInput, type QqTurnReport } from '../src/handlers/agent.js'
 import { DeliveryStore, type SavedInput } from '../src/delivery-store.js'
 import type { HandlerContext } from '../src/router.js'
 import { parseQqSpells, QqSpellDispatcher } from '../src/handlers/control.js'
@@ -39,9 +39,14 @@ it('opening a new chat waits for the current reply to finish sending', async () 
 it('a friend reset survives restart and keeps the other friend bound to its original session', async () => {
   const root = await mkdtemp(join(tmpdir(), 'qq-reset-'))
   const sessions = new Map([['private:friend', 'qq-old'], ['private:other', 'qq-other']])
-  const executor = { prepareSession: vi.fn(async (key: string) => sessions.get(key)!), run: async () => '回复',
+  const bridge = new QqBridgeEvents()
+  const status = { state: 'ungranted', checkedAt: '2026-11-09T12:00:00.000Z' } as const
+  const executor = { prepareSession: vi.fn(async (key: string, input?: DshSegmentInput) => {
+    if (input) input.friendMemoryStatus = status
+    return sessions.get(key)!
+  }), run: async () => '回复',
     startNewSession: async (key: string) => { sessions.set(key, 'qq-fresh') } }
-  const options = { deliveryStatePath: join(root, 'delivery.json'), ackMessage: '' }
+  const options = { deliveryStatePath: join(root, 'delivery.json'), ackMessage: '', prepareTurn: bridge.prepare.bind(bridge) }
   const friend = { ...context(async () => ({})), owner: false, userId: 'friend' }
   const before = new AgentRpcHandler(executor, options)
   const after = new AgentRpcHandler(executor, options)
@@ -49,7 +54,8 @@ it('a friend reset survives restart and keeps the other friend bound to its orig
     await before.open()
     await before.run(friend)
     expect(executor.prepareSession).toHaveBeenCalledWith('private:friend',
-      { owner: false, text: friend.payload, imageCount: 0 })
+      { owner: false, userId: 'friend', text: friend.payload, imageCount: 0, friendMemoryStatus: status })
+    expect(bridge.friendMemoryStatuses()).toEqual([{ userId: 'friend', ...status }])
     await before.run({ ...friend, userId: 'other' })
     await before.startNewSession('private:friend')
     await before.dispose()

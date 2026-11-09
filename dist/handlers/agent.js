@@ -387,8 +387,9 @@ export class AgentRpcHandler {
             payload = ctx.payload;
             const friendMemoryEnabled = this.opts.friendMemoryEnabled?.();
             const memorySetting = friendMemoryEnabled === undefined ? {} : { friendMemoryEnabled };
-            const sessionId = await this.executor.prepareSession?.(sessionKey, ctx.scope === 'private'
-                ? { text: payload, imageCount: images.length, owner: ctx.owner, ...memorySetting } : undefined);
+            const segmentInput = ctx.scope === 'private'
+                ? { text: payload, imageCount: images.length, owner: ctx.owner, userId: ctx.userId, ...memorySetting } : undefined;
+            const sessionId = await this.executor.prepareSession?.(sessionKey, segmentInput);
             const stored = this.active.get(ctx);
             if (stored) {
                 stored.sessionId = sessionId;
@@ -396,7 +397,8 @@ export class AgentRpcHandler {
                 await this.delivery.save();
             }
             await this.opts.prepareTurn?.({ sessionKey, sessionId, scope: ctx.scope, owner: ctx.owner,
-                userId: ctx.userId, groupId: ctx.groupId, messageId: ctx.messageId, input: ctx.payload, ...memorySetting });
+                userId: ctx.userId, groupId: ctx.groupId, messageId: ctx.messageId, input: ctx.payload, ...memorySetting,
+                ...(segmentInput?.friendMemoryStatus ? { friendMemoryStatus: segmentInput.friendMemoryStatus } : {}) });
             if (this.stopped)
                 return;
             if (stored) {

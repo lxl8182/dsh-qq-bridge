@@ -15,10 +15,16 @@ import { parseQqControlBlocks, parseQqSpells } from './handlers/control.js'
 import { extractAssistantText } from './handlers/dsh-executor.js'
 import { replyParts } from './message-format.js'
 
+export interface FriendMemoryStatus {
+  state: 'enabled' | 'off' | 'ungranted' | 'paused' | 'unavailable'
+  checkedAt: string
+}
+
 export interface QqTurnInput {
   /** 准入订阅者确认纯聊天隔离已安装；不来自 QQ 消息正文。 */
   chatOnlyReady?: boolean
   friendMemoryEnabled?: boolean
+  friendMemoryStatus?: FriendMemoryStatus
   sessionKey: string
   sessionId?: string
   scope: 'private' | 'group'
@@ -126,6 +132,7 @@ export class QqBridgeEvents {
   private readonly listeners = new Set<QqTurnListener>()
   private readonly admissions = new Set<(input: QqTurnInput) => Promise<void>>()
   private readonly bindings = new Map<string, QqTurnInput>()
+  private readonly friendMemory = new Map<string, FriendMemoryStatus>()
   /** 重启后恢复的合法拥有者身份;键是桥接自己生成的 sessionKey。 */
   private readonly restored = new Map<string, QqBindingRecord>()
   /** sessionKey → 本进程的 DSH 会话 id。DSH 会话 id 每次启动都会变。 */
@@ -384,6 +391,12 @@ export class QqBridgeEvents {
   }
 
   async prepare(input: QqTurnInput): Promise<void> {
+    if (!input.owner && input.scope === 'private' && input.friendMemoryStatus) {
+      const id = String(input.userId)
+      this.friendMemory.delete(id)
+      this.friendMemory.set(id, input.friendMemoryStatus)
+      if (this.friendMemory.size > 20) this.friendMemory.delete(this.friendMemory.keys().next().value!)
+    }
     if (input.sessionId) this.bindings.set(input.sessionId, { ...input })
     if (input.sessionId && input.sessionKey) this.sessions.set(input.sessionKey, input.sessionId)
     let chatOnlyReady = false
@@ -394,6 +407,10 @@ export class QqBridgeEvents {
     }
     // 订阅者仍只拿输入副本；仅回传准入确认，不接受它们改写来源或正文。
     input.chatOnlyReady = chatOnlyReady
+  }
+
+  friendMemoryStatuses() {
+    return Array.from(this.friendMemory, ([userId, status]) => ({ userId, ...status })).reverse()
   }
 
   /**
@@ -457,6 +474,7 @@ export class QqBridgeEvents {
 
   /** 卸载时清空订阅,避免已销毁的服务继续持有回调。 */
   dispose(): void {
+    this.friendMemory.clear()
     for (const output of this.activeOutputs.values()) output.finish()
     this.activeOutputs.clear()
     this.listeners.clear()

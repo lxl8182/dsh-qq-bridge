@@ -36,6 +36,6 @@ export interface InstalledQqBridgeSettings {
 }
 export declare const QqBridgeHostConfig: unknown;
 export declare function readBridgeConfig(value: DshQqBridgeConfig | BridgeConfigRef): DshQqBridgeConfig;
-export declare function installQqBridgeSettings(ctx: QqBridgeSettingsCtx, entry: DshQqBridgeConfig | BridgeConfigRef, onChange?: (next: DshQqBridgeConfig) => void | Promise<void>): Promise<InstalledQqBridgeSettings>;
+export declare function installQqBridgeSettings(ctx: QqBridgeSettingsCtx, entry: DshQqBridgeConfig | BridgeConfigRef, onChange?: (next: DshQqBridgeConfig) => void | Promise<void>, friendMemoryStatuses?: () => unknown): Promise<InstalledQqBridgeSettings>;
 export declare function cleanupLegacyProfileInsert(dshHome?: string): Promise<boolean>;
 export {};

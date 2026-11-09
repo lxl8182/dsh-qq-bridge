@@ -5,7 +5,7 @@ import {
 } from './control.js'
 import { AgentRunGate } from '../web-activity.js'
 import { DeliveryStore, type DeliveryTurn, type DeliveryPart, type SavedInput } from '../delivery-store.js'
-import type { QqTurnInput } from '../bridge-events.js'
+import type { FriendMemoryStatus, QqTurnInput } from '../bridge-events.js'
 import { collectInboundImages, type InboundImage } from '../onebot/images.js'
 import { imageStatusText } from '../onebot/message.js'
 import { replyParts } from '../message-format.js'
@@ -22,7 +22,9 @@ export interface DshSegmentInput {
   text: string
   imageCount: number
   owner?: boolean
+  userId?: string | number
   friendMemoryEnabled?: boolean
+  friendMemoryStatus?: FriendMemoryStatus
 }
 
 /** qqReplyStyleSkill 的解析结果。仅为配置兼容保留,不再影响交给 Agent 的内容。 */
@@ -494,12 +496,14 @@ export class AgentRpcHandler implements Handler {
       payload = ctx.payload
       const friendMemoryEnabled = this.opts.friendMemoryEnabled?.()
       const memorySetting = friendMemoryEnabled === undefined ? {} : { friendMemoryEnabled }
-      const sessionId = await this.executor.prepareSession?.(sessionKey, ctx.scope === 'private'
-        ? { text: payload, imageCount: images.length, owner: ctx.owner, ...memorySetting } : undefined)
+      const segmentInput: DshSegmentInput | undefined = ctx.scope === 'private'
+        ? { text: payload, imageCount: images.length, owner: ctx.owner, userId: ctx.userId, ...memorySetting } : undefined
+      const sessionId = await this.executor.prepareSession?.(sessionKey, segmentInput)
       const stored = this.active.get(ctx)
       if (stored) { stored.sessionId = sessionId; stored.input.payload = payload; await this.delivery.save() }
       await this.opts.prepareTurn?.({ sessionKey, sessionId, scope: ctx.scope, owner: ctx.owner,
-        userId: ctx.userId, groupId: ctx.groupId, messageId: ctx.messageId, input: ctx.payload, ...memorySetting })
+        userId: ctx.userId, groupId: ctx.groupId, messageId: ctx.messageId, input: ctx.payload, ...memorySetting,
+        ...(segmentInput?.friendMemoryStatus ? { friendMemoryStatus: segmentInput.friendMemoryStatus } : {}) })
       if (this.stopped) return
       if (stored) { stored.state = 'running'; await this.delivery.save() }
       if (ackMessage) await this.respondChunk(ctx, ackMessage)

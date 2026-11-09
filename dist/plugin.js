@@ -39,7 +39,7 @@ export async function apply(ctx, options) {
     const disposeEvents = ctx
         .provide?.(QQ_BRIDGE_EVENTS_SERVICE, events);
     const runtime = createBridgeRuntime(ctx, events);
-    const settings = await installQqBridgeSettings(ctx, options, (next) => runtime.reconcile(next));
+    const settings = await installQqBridgeSettings(ctx, options, (next) => runtime.reconcile(next), () => events.friendMemoryStatuses());
     if (settings === undefined)
         await runtime.reconcile(entry);
     return async () => {

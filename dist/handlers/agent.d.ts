@@ -2,7 +2,7 @@ import { Handler, HandlerContext } from '../router.js';
 import { QqControlDispatcher, QqSpellDispatcher } from './control.js';
 import { AgentRunGate } from '../web-activity.js';
 import { type SavedInput } from '../delivery-store.js';
-import type { QqTurnInput } from '../bridge-events.js';
+import type { FriendMemoryStatus, QqTurnInput } from '../bridge-events.js';
 import { type InboundImage } from '../onebot/images.js';
 /**
  * 历史配置字段 qqReplyStyleSkill 的默认 skill 名。
@@ -15,7 +15,9 @@ export interface DshSegmentInput {
     text: string;
     imageCount: number;
     owner?: boolean;
+    userId?: string | number;
     friendMemoryEnabled?: boolean;
+    friendMemoryStatus?: FriendMemoryStatus;
 }
 /** qqReplyStyleSkill 的解析结果。仅为配置兼容保留,不再影响交给 Agent 的内容。 */
 export interface QqReplyStyleSkillOptions {

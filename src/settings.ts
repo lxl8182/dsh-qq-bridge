@@ -76,6 +76,7 @@ export async function installQqBridgeSettings(
   ctx: QqBridgeSettingsCtx,
   entry: DshQqBridgeConfig | BridgeConfigRef,
   onChange?: (next: DshQqBridgeConfig) => void | Promise<void>,
+  friendMemoryStatuses?: () => unknown,
 ): Promise<InstalledQqBridgeSettings> {
   let current = readBridgeConfig(entry)
   const disposers: Array<() => void> = []
@@ -94,7 +95,7 @@ export async function installQqBridgeSettings(
   const off = ctx.on?.('loader/volatile-update', () => { void refresh() })
   if (off) disposers.push(off)
   const rpcFiber = ctx.inject?.(['connection'], (child) => {
-    const disposable = registerNapcatStatusRpc(child.connection ?? {})
+    const disposable = registerNapcatStatusRpc(child.connection ?? {}, friendMemoryStatuses)
     if (disposable) child.effect?.(() => disposable, 'dsh-qq-bridge.napcat-rpc')
   }, 'dsh-qq-bridge.napcat-rpc')
   if (rpcFiber) disposers.push(() => rpcFiber.dispose())
@@ -111,17 +112,18 @@ export async function installQqBridgeSettings(
   }
 }
 
-function registerNapcatStatusRpc(connection: RpcConnection): (() => void) | undefined {
+function registerNapcatStatusRpc(connection: RpcConnection, friendMemoryStatuses?: () => unknown): (() => void) | undefined {
   if (connection.rpc?.handle === undefined) return undefined
-  const disposable = connection.rpc.handle(QQ_BRIDGE_NAPCAT_RPC_CHANNEL, createNapcatStatusHandler(), { authority: 'loopback' })
+  const disposable = connection.rpc.handle(QQ_BRIDGE_NAPCAT_RPC_CHANNEL, createNapcatStatusHandler(friendMemoryStatuses), { authority: 'loopback' })
   if (typeof disposable === 'function') return disposable
   if (disposable && typeof disposable === 'object' && typeof disposable.dispose === 'function') return () => disposable.dispose()
   return undefined
 }
 
-function createNapcatStatusHandler(): (endpoint: string, payload: unknown) => Promise<unknown> {
+function createNapcatStatusHandler(friendMemoryStatuses?: () => unknown): (endpoint: string, payload: unknown) => Promise<unknown> {
   return async (endpoint, payload) => {
     try {
+      if (endpoint === 'friend-memory-status') return success(friendMemoryStatuses?.() ?? [])
       if (endpoint === 'recovery') return success(getNapcatRecoveryStatus(Number(object(payload).adminQq)) ?? null)
       if (endpoint === 'tag') return success(await inspectNapcatTag(String(object(payload).stage), object(payload)))
       if (endpoint === 'status') {

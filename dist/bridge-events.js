@@ -13,6 +13,7 @@ export class QqBridgeEvents {
     listeners = new Set();
     admissions = new Set();
     bindings = new Map();
+    friendMemory = new Map();
     /** 重启后恢复的合法拥有者身份;键是桥接自己生成的 sessionKey。 */
     restored = new Map();
     /** sessionKey → 本进程的 DSH 会话 id。DSH 会话 id 每次启动都会变。 */
@@ -303,6 +304,13 @@ export class QqBridgeEvents {
         return { dispose: () => { this.admissions.delete(listener); } };
     }
     async prepare(input) {
+        if (!input.owner && input.scope === 'private' && input.friendMemoryStatus) {
+            const id = String(input.userId);
+            this.friendMemory.delete(id);
+            this.friendMemory.set(id, input.friendMemoryStatus);
+            if (this.friendMemory.size > 20)
+                this.friendMemory.delete(this.friendMemory.keys().next().value);
+        }
         if (input.sessionId)
             this.bindings.set(input.sessionId, { ...input });
         if (input.sessionId && input.sessionKey)
@@ -315,6 +323,9 @@ export class QqBridgeEvents {
         }
         // 订阅者仍只拿输入副本；仅回传准入确认，不接受它们改写来源或正文。
         input.chatOnlyReady = chatOnlyReady;
+    }
+    friendMemoryStatuses() {
+        return Array.from(this.friendMemory, ([userId, status]) => ({ userId, ...status })).reverse();
     }
     /**
      * 由宿主插件注册"主动给管理员发一条文字"的能力。
@@ -380,6 +391,7 @@ export class QqBridgeEvents {
     }
     /** 卸载时清空订阅,避免已销毁的服务继续持有回调。 */
     dispose() {
+        this.friendMemory.clear();
         for (const output of this.activeOutputs.values())
             output.finish();
         this.activeOutputs.clear();

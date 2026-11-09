@@ -11,10 +11,15 @@
  * - 桥接未加载时这个服务不存在,订阅方必须自己处理缺失。
  */
 import type { QqTurnReport } from './handlers/agent.js';
+export interface FriendMemoryStatus {
+    state: 'enabled' | 'off' | 'ungranted' | 'paused' | 'unavailable';
+    checkedAt: string;
+}
 export interface QqTurnInput {
     /** 准入订阅者确认纯聊天隔离已安装；不来自 QQ 消息正文。 */
     chatOnlyReady?: boolean;
     friendMemoryEnabled?: boolean;
+    friendMemoryStatus?: FriendMemoryStatus;
     sessionKey: string;
     sessionId?: string;
     scope: 'private' | 'group';
@@ -129,6 +134,7 @@ export declare class QqBridgeEvents {
     private readonly listeners;
     private readonly admissions;
     private readonly bindings;
+    private readonly friendMemory;
     /** 重启后恢复的合法拥有者身份;键是桥接自己生成的 sessionKey。 */
     private readonly restored;
     /** sessionKey → 本进程的 DSH 会话 id。DSH 会话 id 每次启动都会变。 */
@@ -225,6 +231,11 @@ export declare class QqBridgeEvents {
     deliverByIndex(request: QqDeliveryRequest, canSend?: () => Promise<boolean>): Promise<QqDeliveryOutcome>;
     subscribeAdmission(listener: (input: QqTurnInput) => Promise<void>): QqTurnSubscription;
     prepare(input: QqTurnInput): Promise<void>;
+    friendMemoryStatuses(): {
+        state: "enabled" | "off" | "ungranted" | "paused" | "unavailable";
+        checkedAt: string;
+        userId: string;
+    }[];
     /**
      * 由宿主插件注册"主动给管理员发一条文字"的能力。
      *

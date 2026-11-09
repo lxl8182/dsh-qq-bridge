@@ -48,6 +48,21 @@ window.__ModuleLoader__.load({
       const [napcatStatus, setNapcatStatus] = React.useState({ state: "idle", message: "正在等待检测 NapCat 状态。" });
       const [hostInfo, setHostInfo] = React.useState({ homeDir: "" });
       const [modelCatalog, setModelCatalog] = React.useState({ groups: [], status: "loading", error: "" });
+      const [friendMemoryRows, setFriendMemoryRows] = React.useState([]);
+
+      React.useEffect(() => {
+        if (!props.rpc?.call) return undefined;
+        let alive = true;
+        const refresh = async () => {
+          try {
+            const response = await props.rpc.call(NAPCAT_CHANNEL, "friend-memory-status", {});
+            if (alive && response.ok && Array.isArray(response.value)) setFriendMemoryRows(response.value);
+          } catch { /* Older hosts may not expose this status. */ }
+        };
+        void refresh();
+        const timer = setInterval(refresh, 15000);
+        return () => { alive = false; clearInterval(timer); };
+      }, [props.rpc]);
 
       React.useEffect(() => {
         let alive = true;
@@ -310,6 +325,12 @@ window.__ModuleLoader__.load({
             h("input", { type: "checkbox", checked: draft.agent.friendMemoryEnabled, disabled,
               onChange: event => update(["agent", "friendMemoryEnabled"], event.currentTarget.checked) }),
             " 好友记忆与续聊压缩（仅 RIN 已授权的好友，下一轮生效）"),
+          h("p", { style: styles.subtle }, "最近一次好友记忆判定，好友发消息后更新。"),
+          friendMemoryRows.length ? h("ul", { style: styles.subtle },
+            friendMemoryRows.map(({ userId, state, checkedAt }) => h("li", { key: userId },
+              userId + " · " + ({ enabled: "已启用", off: "已关闭", ungranted: "未授权", paused: "RIN 已暂停",
+                unavailable: "RIN 暂不可用" }[state] ?? state) + " · " + new Date(checkedAt).toLocaleString())))
+            : h("p", { style: styles.subtle }, "当前进程还没有好友判定记录。"),
           h("h4", { style: styles.sectionTitle }, "安全与权限"),
           h("div", { style: styles.grid },
             selectField("访问模式", draft.access.mode, ["whitelist", "open"], disabled, (value) => update(["access", "mode"], value)),
@@ -319,7 +340,7 @@ window.__ModuleLoader__.load({
             textField("允许聊天的群（逗号分隔）", draft.access.groupAllowlistText, disabled,
               (value) => update(["access", "groupAllowlistText"], value)),
           ),
-          h("p", { style: styles.subtle }, "好友与群聊各自保留完整会话历史，暂不接入个人记忆、演化或咒语。群内 @机器人时回复。"),
+          h("p", { style: styles.subtle }, "好友与群聊分别保留会话历史。好友记忆按 RIN 授权接入，群内 @机器人时回复。"),
           h("label", { style: styles.checkbox },
             h("input", {
               type: "checkbox",

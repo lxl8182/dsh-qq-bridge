@@ -174,7 +174,8 @@ export async function apply(ctx: DshCtx, options: DshQqBridgeConfig | BridgeConf
   const disposeEvents = (ctx as { provide?: (name: string, value: unknown) => (() => void) | void })
     .provide?.(QQ_BRIDGE_EVENTS_SERVICE, events)
   const runtime = createBridgeRuntime(ctx, events)
-  const settings = await installQqBridgeSettings(ctx, options, (next) => runtime.reconcile(next))
+  const settings = await installQqBridgeSettings(ctx, options, (next) => runtime.reconcile(next),
+    () => events.friendMemoryStatuses())
   if (settings === undefined) await runtime.reconcile(entry)
   return async () => {
     settings?.dispose()
