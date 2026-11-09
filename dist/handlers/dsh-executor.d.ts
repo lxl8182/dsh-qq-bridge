@@ -1,6 +1,7 @@
 import type { AgentExecutor, DshSegmentInput } from './agent.js';
 import type { InboundImage } from '../onebot/images.js';
 import { BridgeModelInfo, BridgeModelSelection, BridgeModelSelectionRef, PermissionController, SessionLifecycleController } from './model-control.js';
+export declare const QQ_RESEARCH_SOURCE = "companion-research";
 /**
  * 提取 session surface 中最后一条 assistant 消息的纯文本。
  *
@@ -159,6 +160,7 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
         resolveModelSelection?: (selection: BridgeModelSelection) => Promise<BridgeModelSelection>;
         listModels?: (provider: string) => Promise<BridgeModelInfo[]>;
         executeCommand?: DshCommandExecutor;
+        resolveResearch?: (sessionId: string, text: string) => Promise<string | undefined>;
         /** 上下文分段端口;缺失时 executor 行为与未接线时完全一致。 */
         segmentPolicy?: DshSegmentPolicy;
     });

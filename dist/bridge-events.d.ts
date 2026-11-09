@@ -135,6 +135,7 @@ export declare class QqBridgeEvents {
     private readonly admissions;
     private readonly bindings;
     private readonly friendMemory;
+    private researchResolver?;
     /** 重启后恢复的合法拥有者身份;键是桥接自己生成的 sessionKey。 */
     private readonly restored;
     /** sessionKey → 本进程的 DSH 会话 id。DSH 会话 id 每次启动都会变。 */
@@ -236,6 +237,8 @@ export declare class QqBridgeEvents {
         checkedAt: string;
         userId: string;
     }[];
+    setResearchResolver(resolver: (sessionId: string, text: string) => Promise<string | undefined>): () => void;
+    resolveResearch(sessionId: string, text: string): Promise<string | undefined>;
     /**
      * 由宿主插件注册"主动给管理员发一条文字"的能力。
      *

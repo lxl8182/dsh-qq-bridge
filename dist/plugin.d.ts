@@ -158,7 +158,7 @@ export declare function makeDshExecutor(ctx: DshCtx, agentCfg?: {
     reasoningEffort?: string;
     models?: readonly string[];
     cwd?: string;
-}, interactions?: QqInteractionBridge, attachWorkspace?: (sessionId: string, cwd: string) => Promise<void>, llm?: () => DshLlmRuntime | undefined, commands?: () => DshCommandRuntime | undefined): DshAgentExecutor;
+}, interactions?: QqInteractionBridge, attachWorkspace?: (sessionId: string, cwd: string) => Promise<void>, llm?: () => DshLlmRuntime | undefined, commands?: () => DshCommandRuntime | undefined, resolveResearch?: (sessionId: string, text: string) => Promise<string | undefined>): DshAgentExecutor;
 /** 段判定端口的安装点;只需要这一个方法,便于测试注入假 executor。 */
 type SegmentPolicyTarget = {
     setSegmentPolicy(policy: DshSegmentPolicy | undefined): void;

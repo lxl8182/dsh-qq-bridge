@@ -117,6 +117,33 @@ describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
     expect(dispose).toHaveBeenCalledOnce()
   })
 
+  it('awaits a research continuation in the same session and keeps the original QQ turn identity', async () => {
+    const events: unknown[] = []
+    function complete(turn: number, input: unknown, reply: string) {
+      events.push({ type: 'turn/start', data: { turn } }, { type: 'user/message', data: input },
+        { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: reply }] } } },
+        { type: 'turn/end', data: { turn, reason: { kind: 'completed' } } })
+    }
+    const followup = vi.fn((message: unknown) => complete(2, message, '我找到了一条试玩消息。'))
+    const resolveResearch = vi.fn(async () => '【终端反馈·查资料】试玩消息')
+    const executor = new DshAgentExecutor({
+      async getOrCreate() { return { followup, async whenIdle() {}, async dispose() {} } },
+      async deliver() {
+        complete(1, { id: 'owner-message', role: 'user', source: { kind: 'user' },
+          content: [{ type: 'text', text: '最近有什么好玩的' }] }, '<查资料>试玩消息</查资料>')
+        return { messageId: 'owner-message' }
+      },
+      async readSurface() { return events.slice() },
+    }, { resolveResearch })
+    expect(await executor.run('private:owner', '最近有什么好玩的')).toBe('我找到了一条试玩消息。')
+    const identity = executor.lastTurnIdentity('private:owner')
+    expect(identity?.messageId).toBe('owner-message')
+    expect(resolveResearch).toHaveBeenCalledOnce()
+    expect(resolveResearch).toHaveBeenCalledWith(identity?.sessionId, '<查资料>试玩消息</查资料>')
+    expect(followup).toHaveBeenCalledWith(expect.objectContaining({ source: { kind: 'companion-research' } }))
+    await executor.disposeAll()
+  })
+
   it('reports the current admission failure before input commit instead of hiding it behind the commit check', async () => {
     const events: unknown[] = [
       { type: 'turn/start', data: { turn: 1 } },

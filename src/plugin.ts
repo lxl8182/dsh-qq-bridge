@@ -6,7 +6,7 @@ import type { InboundImage } from './onebot/images.js'
 import { MessageRouter, OutboundSender } from './router.js'
 import { AccessGate } from './security.js'
 import { AgentRpcHandler } from './handlers/agent.js'
-import { DshAgentExecutor, DshRenderedAgent, eventsForTurn, extractAssistantText, isUnexecutedDsmlToolCall } from './handlers/dsh-executor.js'
+import { DshAgentExecutor, DshRenderedAgent, eventsForTurn, extractAssistantText, isUnexecutedDsmlToolCall, QQ_RESEARCH_SOURCE } from './handlers/dsh-executor.js'
 import { DIR_COMMAND, resolveUserPath } from './handlers/directory.js'
 import {
   createSetCwdControlHandler,
@@ -293,7 +293,8 @@ async function startQqBridge(
   const storageDomainAccess = createDshStorageDomainAccess(ctx)
   const customMemoryStore = new LazyCustomMemoryStore(storageDomainAccess.current)
 
-  const executor = makeDshExecutor(ctx, cfg.agent, interactions, workspaceAttachment.attach, llmAccess.current, commandsAccess.current)
+  const executor = makeDshExecutor(ctx, cfg.agent, interactions, workspaceAttachment.attach, llmAccess.current,
+    commandsAccess.current, events?.resolveResearch.bind(events))
   const segmentPolicyAccess = createSegmentPolicyAccess(ctx, executor)
   const taskScheduler = new InMemoryTaskScheduler({
     executor,
@@ -522,6 +523,7 @@ export function makeDshExecutor(
   attachWorkspace?: (sessionId: string, cwd: string) => Promise<void>,
   llm?: () => DshLlmRuntime | undefined,
   commands?: () => DshCommandRuntime | undefined,
+  resolveResearch?: (sessionId: string, text: string) => Promise<string | undefined>,
 ) {
   const handles = wireDsh(ctx, agentCfg, interactions, attachWorkspace)
   const modelOptions = {
@@ -533,6 +535,7 @@ export function makeDshExecutor(
     resolveModelSelection: createModelSelectionResolver(llm),
     listModels: createModelLister(llm),
     executeCommand: createDshCommandExecutor(commands),
+    resolveResearch,
   }
   if (handles) return new DshAgentExecutor(handles, modelOptions)
   // 无 DSH 服务时占位,便于纯 CLI / 测试
@@ -1120,7 +1123,7 @@ export function registerQqSessionOutput(
     // Ordinary QQ inputs already have their own HandlerContext and send path.
     if (turn.some(row => {
       const input = row as { type?: string; data?: { source?: { kind?: string }; message?: { source?: { kind?: string } } } }
-      return input.type === 'user/message' && ['user', 'companion-proactive'].includes((input.data?.message ?? input.data)?.source?.kind ?? '')
+      return input.type === 'user/message' && ['user', 'companion-proactive', QQ_RESEARCH_SOURCE].includes((input.data?.message ?? input.data)?.source?.kind ?? '')
     })) return
     const text = extractAssistantText(turn)
     if (!text || isUnexecutedDsmlToolCall(text)) return

@@ -1,4 +1,6 @@
+import { parseQqControlBlocks, parseQqSpells } from './control.js';
 import { resolveConfiguredModels, } from './model-control.js';
+export const QQ_RESEARCH_SOURCE = 'companion-research';
 /**
  * 提取 session surface 中最后一条 assistant 消息的纯文本。
  *
@@ -221,6 +223,32 @@ export class DshAgentExecutor {
         if (user?.id)
             this.turnIdentities.set(sessionKey, { sessionId, messageId: user.id });
         const text = extractAssistantText(events);
+        if (text && user?.id && this.opts.resolveResearch) {
+            const feedback = await this.opts.resolveResearch(sessionId, text);
+            if (feedback) {
+                const id = `research:${user.id}`;
+                const afterFirst = surface.length;
+                agent.followup({ id, role: 'user', source: { kind: QQ_RESEARCH_SOURCE },
+                    content: [{ type: 'text', text: feedback }] });
+                await agent.whenIdle();
+                const continued = (await this.readEvents(agent, sessionId)).slice(afterFirst);
+                const index = continued.findIndex(event => {
+                    const row = event;
+                    return row.type === 'user/message' && (row.data?.message ?? row.data)?.id === id;
+                });
+                const start = [...continued.slice(0, Math.max(0, index))].reverse().find(event => event.type === 'turn/start');
+                const turn = start?.data?.turn;
+                if (turn === undefined)
+                    throw new Error('资料已返回，回复未完成。');
+                const finalEvents = eventsForTurn(continued, turn);
+                const end = finalEvents.at(-1);
+                const answer = parseQqControlBlocks(parseQqSpells(extractAssistantText(finalEvents) ?? '').visibleText).visibleText;
+                if (end?.type !== 'turn/end' || end.data?.reason?.kind !== 'completed' || !answer) {
+                    throw new Error('资料已返回，回复未完成。');
+                }
+                return answer;
+            }
+        }
         if (text === null && events.some(event => isUnexecutedDsmlToolCall(extractLastAssistantText([event]) ?? ''))) {
             return [
                 'agent 生成了一个未被 DSH 执行的工具调用,已拦截原始协议文本。',

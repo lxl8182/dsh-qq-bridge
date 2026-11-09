@@ -133,6 +133,7 @@ export class QqBridgeEvents {
   private readonly admissions = new Set<(input: QqTurnInput) => Promise<void>>()
   private readonly bindings = new Map<string, QqTurnInput>()
   private readonly friendMemory = new Map<string, FriendMemoryStatus>()
+  private researchResolver?: (sessionId: string, text: string) => Promise<string | undefined>
   /** 重启后恢复的合法拥有者身份;键是桥接自己生成的 sessionKey。 */
   private readonly restored = new Map<string, QqBindingRecord>()
   /** sessionKey → 本进程的 DSH 会话 id。DSH 会话 id 每次启动都会变。 */
@@ -413,6 +414,16 @@ export class QqBridgeEvents {
     return Array.from(this.friendMemory, ([userId, status]) => ({ userId, ...status })).reverse()
   }
 
+  setResearchResolver(resolver: (sessionId: string, text: string) => Promise<string | undefined>): () => void {
+    this.researchResolver = resolver
+    return () => { if (this.researchResolver === resolver) this.researchResolver = undefined }
+  }
+
+  async resolveResearch(sessionId: string, text: string): Promise<string | undefined> {
+    const binding = this.binding(sessionId)
+    if (binding?.scope === 'private' && binding.owner) return await this.researchResolver?.(sessionId, text)
+  }
+
   /**
    * 由宿主插件注册"主动给管理员发一条文字"的能力。
    *
@@ -475,6 +486,7 @@ export class QqBridgeEvents {
   /** 卸载时清空订阅,避免已销毁的服务继续持有回调。 */
   dispose(): void {
     this.friendMemory.clear()
+    this.researchResolver = undefined
     for (const output of this.activeOutputs.values()) output.finish()
     this.activeOutputs.clear()
     this.listeners.clear()

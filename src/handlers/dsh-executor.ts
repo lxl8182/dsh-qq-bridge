@@ -1,5 +1,6 @@
 import type { AgentExecutor, DshSegmentInput } from './agent.js'
 import type { InboundImage } from '../onebot/images.js'
+import { parseQqControlBlocks, parseQqSpells } from './control.js'
 import {
   BridgeModelInfo,
   BridgeModelSelection,
@@ -9,6 +10,8 @@ import {
   resolveConfiguredModels,
   SessionLifecycleController,
 } from './model-control.js'
+
+export const QQ_RESEARCH_SOURCE = 'companion-research'
 
 /**
  * 提取 session surface 中最后一条 assistant 消息的纯文本。
@@ -252,6 +255,7 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
       resolveModelSelection?: (selection: BridgeModelSelection) => Promise<BridgeModelSelection>
       listModels?: (provider: string) => Promise<BridgeModelInfo[]>
       executeCommand?: DshCommandExecutor
+      resolveResearch?: (sessionId: string, text: string) => Promise<string | undefined>
       /** 上下文分段端口;缺失时 executor 行为与未接线时完全一致。 */
       segmentPolicy?: DshSegmentPolicy
     } = {},
@@ -349,6 +353,32 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
     const user = extractLastUserMessage(events)
     if (user?.id) this.turnIdentities.set(sessionKey, { sessionId, messageId: user.id })
     const text = extractAssistantText(events)
+    if (text && user?.id && this.opts.resolveResearch) {
+      const feedback = await this.opts.resolveResearch(sessionId, text)
+      if (feedback) {
+        const id = `research:${user.id}`
+        const afterFirst = surface.length
+        agent.followup({ id, role: 'user', source: { kind: QQ_RESEARCH_SOURCE },
+          content: [{ type: 'text', text: feedback }] })
+        await agent.whenIdle()
+        const continued = (await this.readEvents(agent, sessionId)).slice(afterFirst)
+        const index = continued.findIndex(event => {
+          const row = event as { type?: string; data?: { id?: string; message?: { id?: string } } }
+          return row.type === 'user/message' && (row.data?.message ?? row.data)?.id === id
+        })
+        const start = [...continued.slice(0, Math.max(0, index))].reverse().find(event =>
+          (event as { type?: string }).type === 'turn/start') as { data?: { turn?: number } } | undefined
+        const turn = start?.data?.turn
+        if (turn === undefined) throw new Error('资料已返回，回复未完成。')
+        const finalEvents = eventsForTurn(continued, turn)
+        const end = finalEvents.at(-1) as { type?: string; data?: { reason?: { kind?: string } } } | undefined
+        const answer = parseQqControlBlocks(parseQqSpells(extractAssistantText(finalEvents) ?? '').visibleText).visibleText
+        if (end?.type !== 'turn/end' || end.data?.reason?.kind !== 'completed' || !answer) {
+          throw new Error('资料已返回，回复未完成。')
+        }
+        return answer
+      }
+    }
     if (text === null && events.some(event => isUnexecutedDsmlToolCall(extractLastAssistantText([event]) ?? ''))) {
       return [
         'agent 生成了一个未被 DSH 执行的工具调用,已拦截原始协议文本。',

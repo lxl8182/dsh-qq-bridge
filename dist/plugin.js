@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { MessageRouter } from './router.js';
 import { AccessGate } from './security.js';
 import { AgentRpcHandler } from './handlers/agent.js';
-import { DshAgentExecutor, eventsForTurn, extractAssistantText, isUnexecutedDsmlToolCall } from './handlers/dsh-executor.js';
+import { DshAgentExecutor, eventsForTurn, extractAssistantText, isUnexecutedDsmlToolCall, QQ_RESEARCH_SOURCE } from './handlers/dsh-executor.js';
 import { DIR_COMMAND, resolveUserPath } from './handlers/directory.js';
 import { createSetCwdControlHandler, createNewSessionControlHandler, createSetModelControlHandler, createSetPermissionControlHandler, createSetReasoningEffortControlHandler, QqControlDispatcher, } from './handlers/control.js';
 import { createSaveMemoControlHandler, LazyCustomMemoryStore } from './handlers/custom-memory.js';
@@ -147,7 +147,7 @@ async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
     const commandsAccess = createDshCommandsAccess(ctx);
     const storageDomainAccess = createDshStorageDomainAccess(ctx);
     const customMemoryStore = new LazyCustomMemoryStore(storageDomainAccess.current);
-    const executor = makeDshExecutor(ctx, cfg.agent, interactions, workspaceAttachment.attach, llmAccess.current, commandsAccess.current);
+    const executor = makeDshExecutor(ctx, cfg.agent, interactions, workspaceAttachment.attach, llmAccess.current, commandsAccess.current, events?.resolveResearch.bind(events));
     const segmentPolicyAccess = createSegmentPolicyAccess(ctx, executor);
     const taskScheduler = new InMemoryTaskScheduler({
         executor,
@@ -359,7 +359,7 @@ export function readPlatformMessageId(result) {
     }
     return undefined;
 }
-export function makeDshExecutor(ctx, agentCfg, interactions, attachWorkspace, llm, commands) {
+export function makeDshExecutor(ctx, agentCfg, interactions, attachWorkspace, llm, commands, resolveResearch) {
     const handles = wireDsh(ctx, agentCfg, interactions, attachWorkspace);
     const modelOptions = {
         defaultCwd: agentCfg?.cwd ? resolveUserPath(agentCfg.cwd) : undefined,
@@ -370,6 +370,7 @@ export function makeDshExecutor(ctx, agentCfg, interactions, attachWorkspace, ll
         resolveModelSelection: createModelSelectionResolver(llm),
         listModels: createModelLister(llm),
         executeCommand: createDshCommandExecutor(commands),
+        resolveResearch,
     };
     if (handles)
         return new DshAgentExecutor(handles, modelOptions);
@@ -931,7 +932,7 @@ export function registerQqSessionOutput(ctx, executor, bridge, handler) {
         // Ordinary QQ inputs already have their own HandlerContext and send path.
         if (turn.some(row => {
             const input = row;
-            return input.type === 'user/message' && ['user', 'companion-proactive'].includes((input.data?.message ?? input.data)?.source?.kind ?? '');
+            return input.type === 'user/message' && ['user', 'companion-proactive', QQ_RESEARCH_SOURCE].includes((input.data?.message ?? input.data)?.source?.kind ?? '');
         }))
             return;
         const text = extractAssistantText(turn);

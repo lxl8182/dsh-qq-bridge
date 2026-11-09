@@ -14,6 +14,7 @@ export class QqBridgeEvents {
     admissions = new Set();
     bindings = new Map();
     friendMemory = new Map();
+    researchResolver;
     /** 重启后恢复的合法拥有者身份;键是桥接自己生成的 sessionKey。 */
     restored = new Map();
     /** sessionKey → 本进程的 DSH 会话 id。DSH 会话 id 每次启动都会变。 */
@@ -327,6 +328,16 @@ export class QqBridgeEvents {
     friendMemoryStatuses() {
         return Array.from(this.friendMemory, ([userId, status]) => ({ userId, ...status })).reverse();
     }
+    setResearchResolver(resolver) {
+        this.researchResolver = resolver;
+        return () => { if (this.researchResolver === resolver)
+            this.researchResolver = undefined; };
+    }
+    async resolveResearch(sessionId, text) {
+        const binding = this.binding(sessionId);
+        if (binding?.scope === 'private' && binding.owner)
+            return await this.researchResolver?.(sessionId, text);
+    }
     /**
      * 由宿主插件注册"主动给管理员发一条文字"的能力。
      *
@@ -392,6 +403,7 @@ export class QqBridgeEvents {
     /** 卸载时清空订阅,避免已销毁的服务继续持有回调。 */
     dispose() {
         this.friendMemory.clear();
+        this.researchResolver = undefined;
         for (const output of this.activeOutputs.values())
             output.finish();
         this.activeOutputs.clear();
