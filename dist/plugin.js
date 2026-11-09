@@ -238,13 +238,17 @@ async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
     const disposeReplay = events?.setReplay(() => agentHandler.completedReports());
     const disposeOutputSender = events?.setOutputSender(async (sessionId, outputId, parts, canSend) => {
         const input = events.binding(sessionId);
-        if (!input)
-            throw new Error('QQ owner session is not bound');
+        if (!input || !events.canContact(sessionId))
+            throw new Error('QQ private session is not bound or allowed');
         return agentHandler.deliverOutput(input, outputId, parts, canSend);
     });
     // RO04-B 接口钩子:只接线,不新增判断,也不在启动时触发任何恢复或会话创建。
     // 两者都在插槽里,后注册覆盖先注册;events.dispose() 在卸载时清空。
-    events?.setIdentityVerifier(record => gate.isOwner({ user_id: record.userId }));
+    events?.setIdentityVerifier(record => {
+        const identity = { user_id: record.userId, message_type: record.scope, group_id: record.groupId };
+        return record.owner ? gate.isOwner(identity) : record.scope === 'private'
+            && !gate.isOwner(identity) && friendMemoryEnabled() && gate.allow(identity);
+    });
     events?.setSessionBinder(record => executor.prepareSession(record.sessionKey));
     // 主动推送通道:其他插件(例如记忆插件)有"没人可回填"的结果时,直接发到
     // 管理员私聊。发给谁、怎么发由桥接决定,调用方只给文字。

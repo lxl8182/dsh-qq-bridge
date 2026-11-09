@@ -167,14 +167,15 @@ export class AgentRpcHandler {
     }
     /** Session followups have no inbound HandlerContext; reuse durable delivery. */
     async deliverOutput(input, outputId, parts, canSend) {
-        if (this.stopped || !input.owner || input.scope !== 'private' || !input.sessionId || !this.opts.restoreContext) {
+        if (this.stopped || (!input.owner && !this.opts.friendMemoryEnabled?.())
+            || input.scope !== 'private' || !input.sessionId || !this.opts.restoreContext) {
             throw new Error('QQ output session is unavailable');
         }
         const ctx = this.opts.restoreContext({
-            scope: input.scope, userId: input.userId, owner: true, payload: '',
+            scope: input.scope, userId: input.userId, owner: input.owner, payload: '',
             messageId: outputId,
         });
-        if (!ctx)
+        if (!ctx || ctx.owner !== input.owner)
             throw new Error('QQ output route is unavailable');
         let result;
         await this.enqueue(input.sessionKey, async () => {

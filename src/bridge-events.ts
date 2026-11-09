@@ -55,8 +55,8 @@ export interface QqBindingRecord {
   /** 'private:<userId>' 或 'group:<groupId>',必须等于桥接自己的生成规则。 */
   sessionKey: string
   scope: 'private' | 'group'
-  /** 恒为 true:个人绑定只跟随已校验的拥有者。 */
-  owner: true
+  /** 由桥接核对的私聊身份。 */
+  owner: boolean
   userId: string | number
   groupId?: string | number
   /** 确认该绑定的入站平台消息 id,仅用于事后核对。 */
@@ -242,7 +242,7 @@ export class QqBridgeEvents {
       if (!record || typeof record !== 'object') { reject('invalid_record'); continue }
       const scope = record.scope
       if (scope !== 'private' && scope !== 'group') { reject('invalid_scope'); continue }
-      if (record.owner !== true) { reject('not_owner'); continue }
+      if (record.owner !== true && (record.owner !== false || scope !== 'private')) { reject('not_owner'); continue }
       const userId = record.userId
       if (userId === undefined || userId === null || `${userId}`.trim() === '') { reject('missing_user'); continue }
       if (scope === 'group' && (record.groupId === undefined || record.groupId === null)) { reject('missing_group'); continue }
@@ -253,18 +253,13 @@ export class QqBridgeEvents {
         report.kept++
         continue
       }
-      if (this.restored.has(record.sessionKey)) {
-        // Same identity restored twice (e.g. an older snapshot): last one wins.
-        this.restored.set(record.sessionKey, { ...record })
-        continue
-      }
       const verifier = this.identityVerifier
       if (!verifier) { reject('identity_unverified'); continue }
       let trusted = false
       try { trusted = verifier({ ...record }) } catch { trusted = false }
       if (!trusted) { reject('identity_not_owner'); continue }
+      if (!this.restored.has(record.sessionKey)) report.restored++
       this.restored.set(record.sessionKey, { ...record })
-      report.restored++
     }
     return report
   }
@@ -287,7 +282,8 @@ export class QqBridgeEvents {
     if (!record || !sessionId) return false
     this.sessions.set(sessionKey, sessionId)
     this.bindings.set(sessionId, {
-      sessionKey, sessionId, scope: record.scope, owner: true, userId: record.userId,
+      sessionKey, sessionId, scope: record.scope, owner: record.owner, userId: record.userId,
+      ...(record.owner ? {} : { friendMemoryEnabled: true }),
       ...(record.groupId === undefined ? {} : { groupId: record.groupId }),
       ...(record.messageId === undefined ? {} : { messageId: record.messageId }),
       input: '',
@@ -339,9 +335,9 @@ export class QqBridgeEvents {
     const rows = new Map<string, QqBindingRecord>()
     for (const record of this.restored.values()) rows.set(record.sessionKey, { ...record })
     for (const binding of this.bindings.values()) {
-      if (!binding.owner) continue
+      if (!binding.owner && (binding.scope !== 'private' || binding.friendMemoryStatus?.state !== 'enabled')) continue
       rows.set(binding.sessionKey, {
-        sessionKey: binding.sessionKey, scope: binding.scope, owner: true, userId: binding.userId,
+        sessionKey: binding.sessionKey, scope: binding.scope, owner: binding.owner, userId: binding.userId,
         ...(binding.groupId === undefined ? {} : { groupId: binding.groupId }),
         ...(binding.messageId === undefined ? {} : { messageId: binding.messageId }),
       })
@@ -373,8 +369,9 @@ export class QqBridgeEvents {
     const sessionId = request.sessionId ?? this.sessions.get(request.sessionKey)
     if (!sessionId) return unavailable(this.restored.has(request.sessionKey) ? 'no_session' : 'not_bound')
     const live = this.bindings.get(sessionId)
-    if (!live || !live.owner || live.sessionKey !== request.sessionKey) return unavailable('binding_mismatch')
+    if (!live || live.sessionKey !== request.sessionKey) return unavailable('binding_mismatch')
     if (live.scope !== 'private') return unavailable('not_private')
+    if (!this.canContact(sessionId)) return unavailable('binding_mismatch')
     if (!this.outputSender) return unavailable('transport_unavailable')
     const ordered = [...parts].sort((left, right) => left.index - right.index)
       .map(part => ({ index: part.index, text: part.text }))
@@ -390,6 +387,14 @@ export class QqBridgeEvents {
     return { status: delivery.status, parts: delivery.parts, pending }
   }
 
+  canContact(sessionId: string): boolean {
+    const binding = this.binding(sessionId)
+    if (binding?.scope !== 'private') return false
+    return binding.owner || binding.friendMemoryStatus?.state === 'enabled' && this.identityVerifier?.({
+      sessionKey: binding.sessionKey, scope: binding.scope, owner: false, userId: binding.userId,
+    }) === true
+  }
+
 
   subscribeAdmission(listener: (input: QqTurnInput) => Promise<void>): QqTurnSubscription {
     this.admissions.add(listener)
@@ -397,14 +402,9 @@ export class QqBridgeEvents {
   }
 
   async prepare(input: QqTurnInput): Promise<void> {
-    if (!input.owner && input.scope === 'private' && input.friendMemoryStatus) {
-      const id = String(input.userId)
-      this.friendMemory.delete(id)
-      this.friendMemory.set(id, input.friendMemoryStatus)
-      if (this.friendMemory.size > 20) this.friendMemory.delete(this.friendMemory.keys().next().value!)
-    }
     if (input.sessionId) this.bindings.set(input.sessionId, { ...input })
     if (input.sessionId && input.sessionKey) this.sessions.set(input.sessionKey, input.sessionId)
+    if (input.sessionId && input.friendMemoryStatus) this.noteFriendMemory(input.sessionId, input.friendMemoryStatus)
     let chatOnlyReady = false
     for (const listener of this.admissions) {
       const prepared = { ...input, chatOnlyReady: false }
@@ -413,6 +413,16 @@ export class QqBridgeEvents {
     }
     // 订阅者仍只拿输入副本；仅回传准入确认，不接受它们改写来源或正文。
     input.chatOnlyReady = chatOnlyReady
+  }
+
+  noteFriendMemory(sessionId: string, status: FriendMemoryStatus): void {
+    const binding = this.bindings.get(sessionId)
+    if (binding?.scope !== 'private' || binding.owner) return
+    binding.friendMemoryStatus = status
+    const id = String(binding.userId)
+    this.friendMemory.delete(id)
+    this.friendMemory.set(id, status)
+    if (this.friendMemory.size > 20) this.friendMemory.delete(this.friendMemory.keys().next().value!)
   }
 
   friendMemoryStatuses() {
@@ -426,7 +436,7 @@ export class QqBridgeEvents {
 
   async resolveResearch(sessionId: string, text: string): Promise<QqResearchResult | undefined> {
     const binding = this.binding(sessionId)
-    if (binding?.scope === 'private' && binding.owner) return await this.researchResolver?.(sessionId, text)
+    if (binding?.scope === 'private') return await this.researchResolver?.(sessionId, text)
   }
 
   /**

@@ -123,18 +123,18 @@ describe('RO04-B 绑定恢复:重启后不需要新发言', () => {
 
   it('refuses to invent an identity: whitelisted members, forged keys and non-owner claims', async () => {
     const events = new QqBridgeEvents()
-    const off = events.setIdentityVerifier(record => ownerGate().isOwner({ user_id: record.userId }))
+    const off = events.setIdentityVerifier(record => record.owner && ownerGate().isOwner({ user_id: record.userId }))
     try {
       const legal: QqBindingRecord = { sessionKey: SESSION_KEY, scope: 'private', owner: true, userId: OWNER }
       const member: QqBindingRecord = { sessionKey: `private:${STRANGER}`, scope: 'private', owner: true, userId: STRANGER }
       const forged: QqBindingRecord = { sessionKey: 'nickname:小铃', scope: 'private', owner: true, userId: OWNER }
-      const notOwner = { ...legal, owner: false as unknown as true }
+      const notOwner = { ...legal, owner: false }
       const report = events.restoreBindings([legal, member, forged, notOwner])
       expect(report.restored).toBe(1)
       expect(report.rejected).toEqual([
         { sessionKey: `private:${STRANGER}`, reason: 'identity_not_owner' },
         { sessionKey: 'nickname:小铃', reason: 'session_key_mismatch' },
-        { sessionKey: SESSION_KEY, reason: 'not_owner' },
+        { sessionKey: SESSION_KEY, reason: 'identity_not_owner' },
       ])
       expect(await events.deliverByIndex({ sessionKey: `private:${STRANGER}`, outputId: 'out-x',
         parts: [{ index: 0, text: '不该发送' }] }))

@@ -48,8 +48,8 @@ export interface QqBindingRecord {
     /** 'private:<userId>' 或 'group:<groupId>',必须等于桥接自己的生成规则。 */
     sessionKey: string;
     scope: 'private' | 'group';
-    /** 恒为 true:个人绑定只跟随已校验的拥有者。 */
-    owner: true;
+    /** 由桥接核对的私聊身份。 */
+    owner: boolean;
     userId: string | number;
     groupId?: string | number;
     /** 确认该绑定的入站平台消息 id,仅用于事后核对。 */
@@ -234,8 +234,10 @@ export declare class QqBridgeEvents {
      * 调用方用同一个 outputId 再投一次只会发送未送达的段。
      */
     deliverByIndex(request: QqDeliveryRequest, canSend?: () => Promise<boolean>): Promise<QqDeliveryOutcome>;
+    canContact(sessionId: string): boolean;
     subscribeAdmission(listener: (input: QqTurnInput) => Promise<void>): QqTurnSubscription;
     prepare(input: QqTurnInput): Promise<void>;
+    noteFriendMemory(sessionId: string, status: FriendMemoryStatus): void;
     friendMemoryStatuses(): {
         state: "enabled" | "off" | "ungranted" | "paused" | "unavailable";
         checkedAt: string;

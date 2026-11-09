@@ -115,7 +115,7 @@ export class QqBridgeEvents {
                 reject('invalid_scope');
                 continue;
             }
-            if (record.owner !== true) {
+            if (record.owner !== true && (record.owner !== false || scope !== 'private')) {
                 reject('not_owner');
                 continue;
             }
@@ -138,11 +138,6 @@ export class QqBridgeEvents {
                 report.kept++;
                 continue;
             }
-            if (this.restored.has(record.sessionKey)) {
-                // Same identity restored twice (e.g. an older snapshot): last one wins.
-                this.restored.set(record.sessionKey, { ...record });
-                continue;
-            }
             const verifier = this.identityVerifier;
             if (!verifier) {
                 reject('identity_unverified');
@@ -159,8 +154,9 @@ export class QqBridgeEvents {
                 reject('identity_not_owner');
                 continue;
             }
+            if (!this.restored.has(record.sessionKey))
+                report.restored++;
             this.restored.set(record.sessionKey, { ...record });
-            report.restored++;
         }
         return report;
     }
@@ -182,7 +178,8 @@ export class QqBridgeEvents {
             return false;
         this.sessions.set(sessionKey, sessionId);
         this.bindings.set(sessionId, {
-            sessionKey, sessionId, scope: record.scope, owner: true, userId: record.userId,
+            sessionKey, sessionId, scope: record.scope, owner: record.owner, userId: record.userId,
+            ...(record.owner ? {} : { friendMemoryEnabled: true }),
             ...(record.groupId === undefined ? {} : { groupId: record.groupId }),
             ...(record.messageId === undefined ? {} : { messageId: record.messageId }),
             input: '',
@@ -239,10 +236,10 @@ export class QqBridgeEvents {
         for (const record of this.restored.values())
             rows.set(record.sessionKey, { ...record });
         for (const binding of this.bindings.values()) {
-            if (!binding.owner)
+            if (!binding.owner && (binding.scope !== 'private' || binding.friendMemoryStatus?.state !== 'enabled'))
                 continue;
             rows.set(binding.sessionKey, {
-                sessionKey: binding.sessionKey, scope: binding.scope, owner: true, userId: binding.userId,
+                sessionKey: binding.sessionKey, scope: binding.scope, owner: binding.owner, userId: binding.userId,
                 ...(binding.groupId === undefined ? {} : { groupId: binding.groupId }),
                 ...(binding.messageId === undefined ? {} : { messageId: binding.messageId }),
             });
@@ -280,10 +277,12 @@ export class QqBridgeEvents {
         if (!sessionId)
             return unavailable(this.restored.has(request.sessionKey) ? 'no_session' : 'not_bound');
         const live = this.bindings.get(sessionId);
-        if (!live || !live.owner || live.sessionKey !== request.sessionKey)
+        if (!live || live.sessionKey !== request.sessionKey)
             return unavailable('binding_mismatch');
         if (live.scope !== 'private')
             return unavailable('not_private');
+        if (!this.canContact(sessionId))
+            return unavailable('binding_mismatch');
         if (!this.outputSender)
             return unavailable('transport_unavailable');
         const ordered = [...parts].sort((left, right) => left.index - right.index)
@@ -300,22 +299,25 @@ export class QqBridgeEvents {
             .map(part => part.index).sort((left, right) => left - right);
         return { status: delivery.status, parts: delivery.parts, pending };
     }
+    canContact(sessionId) {
+        const binding = this.binding(sessionId);
+        if (binding?.scope !== 'private')
+            return false;
+        return binding.owner || binding.friendMemoryStatus?.state === 'enabled' && this.identityVerifier?.({
+            sessionKey: binding.sessionKey, scope: binding.scope, owner: false, userId: binding.userId,
+        }) === true;
+    }
     subscribeAdmission(listener) {
         this.admissions.add(listener);
         return { dispose: () => { this.admissions.delete(listener); } };
     }
     async prepare(input) {
-        if (!input.owner && input.scope === 'private' && input.friendMemoryStatus) {
-            const id = String(input.userId);
-            this.friendMemory.delete(id);
-            this.friendMemory.set(id, input.friendMemoryStatus);
-            if (this.friendMemory.size > 20)
-                this.friendMemory.delete(this.friendMemory.keys().next().value);
-        }
         if (input.sessionId)
             this.bindings.set(input.sessionId, { ...input });
         if (input.sessionId && input.sessionKey)
             this.sessions.set(input.sessionKey, input.sessionId);
+        if (input.sessionId && input.friendMemoryStatus)
+            this.noteFriendMemory(input.sessionId, input.friendMemoryStatus);
         let chatOnlyReady = false;
         for (const listener of this.admissions) {
             const prepared = { ...input, chatOnlyReady: false };
@@ -324,6 +326,17 @@ export class QqBridgeEvents {
         }
         // 订阅者仍只拿输入副本；仅回传准入确认，不接受它们改写来源或正文。
         input.chatOnlyReady = chatOnlyReady;
+    }
+    noteFriendMemory(sessionId, status) {
+        const binding = this.bindings.get(sessionId);
+        if (binding?.scope !== 'private' || binding.owner)
+            return;
+        binding.friendMemoryStatus = status;
+        const id = String(binding.userId);
+        this.friendMemory.delete(id);
+        this.friendMemory.set(id, status);
+        if (this.friendMemory.size > 20)
+            this.friendMemory.delete(this.friendMemory.keys().next().value);
     }
     friendMemoryStatuses() {
         return Array.from(this.friendMemory, ([userId, status]) => ({ userId, ...status })).reverse();
@@ -335,7 +348,7 @@ export class QqBridgeEvents {
     }
     async resolveResearch(sessionId, text) {
         const binding = this.binding(sessionId);
-        if (binding?.scope === 'private' && binding.owner)
+        if (binding?.scope === 'private')
             return await this.researchResolver?.(sessionId, text);
     }
     /**
