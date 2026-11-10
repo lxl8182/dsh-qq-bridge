@@ -46,7 +46,8 @@ export function parseQqSpells(text: string): ParsedQqSpells {
       if (!fence) fence = marker[1]
       else if (marker[1].startsWith(fence) && !marker[2].trim()) fence = ''
     }
-    const match = !fence && !marker && /^ {0,3}<([\p{Script=Han}]{2,8})>(.*?)<\/\1>[ \t]*$/u.exec(line)
+    const spellLine = line.replace(/^( {0,3})(查资料|翻本子)[ \t]*[:：][ \t]*(?=<\2>)/u, '$1')
+    const match = !fence && !marker && /^ {0,3}<([\p{Script=Han}]{2,8})>(.*?)<\/\1>[ \t]*$/u.exec(spellLine)
     if (!match || match[2].includes(`</${match[1]}>`) || match[2].includes(`<${match[1]}>`)) {
       visible.push(line)
       continue

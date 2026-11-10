@@ -162,6 +162,9 @@ it('QQ stripping includes built-in, meta and learned names while retaining HTML 
   expect(parseQqSpells('<执行>还没写完').visibleText).toBe('<执行>还没写完')
   const quoted = '> <执行>引用</执行>\n```xml\n<执行>代码</执行>\n```'
   expect(parseQqSpells(quoted)).toEqual({ visibleText: quoted, spells: [] })
+  expect(parseQqSpells('查资料：<查资料>招聘</查资料>')).toEqual({
+    visibleText: '', spells: [{ spell: '查资料', body: '招聘' }],
+  })
 })
 
 it('QQ only strips spells, never executes or sends the old terminal feedback', async () => {
