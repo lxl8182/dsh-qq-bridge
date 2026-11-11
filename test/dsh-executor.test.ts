@@ -118,9 +118,10 @@ describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
   })
 
   it.each([
-    ['我找到了一条试玩消息 [1]。', '我找到了一条试玩消息 [1]。\n\n[1] 试玩消息\nhttps://example.com/demo'],
-    ['<查资料>再次查找</查资料>', '这次查询还没整理出可靠的答复。'],
-  ])('ends the research after one continuation and keeps the original QQ turn identity for %s', async (reply, expected) => {
+    ['查资料', '我找到了一条试玩消息 [1]。', '我找到了一条试玩消息 [1]。\n\n[1] 试玩消息\nhttps://example.com/demo'],
+    ['查资料', '<查资料>再次查找</查资料>', '这次查询还没整理出可靠的答复。'],
+    ['翻本子', '我记得你聊过那款游戏。', '我记得你聊过那款游戏。'],
+  ])('ends %s after one continuation and keeps the original QQ turn identity for %s', async (spell, reply, expected) => {
     const events: unknown[] = []
     function complete(turn: number, input: unknown, reply: string) {
       events.push({ type: 'turn/start', data: { turn } }, { type: 'user/message', data: input },
@@ -128,13 +129,14 @@ describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
         { type: 'turn/end', data: { turn, reason: { kind: 'completed' } } })
     }
     const followup = vi.fn((message: unknown) => complete(2, message, reply))
-    const history = '1. 试玩消息\nhttps://example.com/demo'
-    const resolveResearch = vi.fn(async () => ({ text: '【终端反馈·查资料】试玩消息', history }))
+    const history = spell === '查资料' ? '1. 试玩消息\nhttps://example.com/demo' : ''
+    const resolveResearch = vi.fn(async () => ({ text: `【终端反馈·${spell}】试玩消息`, history }))
+    const cast = `<${spell}>试玩消息</${spell}>`
     const executor = new DshAgentExecutor({
       async getOrCreate() { return { followup, async whenIdle() {}, async dispose() {} } },
       async deliver() {
         complete(1, { id: 'owner-message', role: 'user', source: { kind: 'user' },
-          content: [{ type: 'text', text: '最近有什么好玩的' }] }, '<查资料>试玩消息</查资料>')
+          content: [{ type: 'text', text: '最近有什么好玩的' }] }, cast)
         return { messageId: 'owner-message' }
       },
       async readSurface() { return events.slice() },
@@ -143,9 +145,10 @@ describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
     const identity = executor.lastTurnIdentity('private:owner')
     expect(identity?.messageId).toBe('owner-message')
     expect(resolveResearch).toHaveBeenCalledOnce()
-    expect(resolveResearch).toHaveBeenCalledWith(identity?.sessionId, '<查资料>试玩消息</查资料>')
+    expect(resolveResearch).toHaveBeenCalledWith(identity?.sessionId, cast)
     expect(followup).toHaveBeenCalledOnce()
-    expect(followup).toHaveBeenCalledWith(expect.objectContaining({ source: { kind: 'companion-research', history } }))
+    expect(followup).toHaveBeenCalledWith(expect.objectContaining({ source: { kind: 'companion-research', history, spell } }))
+    if (spell === '翻本子') expect(JSON.stringify(followup.mock.calls[0])).not.toContain('来源链接')
     await executor.disposeAll()
   })
 

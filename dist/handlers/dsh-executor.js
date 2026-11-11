@@ -226,10 +226,14 @@ export class DshAgentExecutor {
         if (text && user?.id && this.opts.resolveResearch) {
             const feedback = await this.opts.resolveResearch(sessionId, text);
             if (feedback) {
+                const [lookup] = parseQqSpells(text).spells;
+                const instruction = lookup?.spell === '翻本子'
+                    ? '我已经翻过本子，接下来用这些回忆回答原来的问题。'
+                    : '这次查询已结束。我根据收到的资料直接回答原问题，附上支持具体结论的来源链接。';
                 const id = `research:${user.id}`;
                 const afterFirst = surface.length;
-                agent.followup({ id, role: 'user', source: { kind: QQ_RESEARCH_SOURCE, history: feedback.history },
-                    content: [{ type: 'text', text: feedback.text + '\n这次查询已结束。我根据收到的资料直接回答原问题，附上支持具体结论的来源链接。' }] });
+                agent.followup({ id, role: 'user', source: { kind: QQ_RESEARCH_SOURCE, history: feedback.history, spell: lookup?.spell },
+                    content: [{ type: 'text', text: feedback.text + '\n' + instruction }] });
                 await agent.whenIdle();
                 const continued = (await this.readEvents(agent, sessionId)).slice(afterFirst);
                 const index = continued.findIndex(event => {
