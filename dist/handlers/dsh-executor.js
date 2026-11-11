@@ -229,7 +229,7 @@ export class DshAgentExecutor {
                 const id = `research:${user.id}`;
                 const afterFirst = surface.length;
                 agent.followup({ id, role: 'user', source: { kind: QQ_RESEARCH_SOURCE, history: feedback.history },
-                    content: [{ type: 'text', text: feedback.text }] });
+                    content: [{ type: 'text', text: feedback.text + '\n这次查询已结束。我根据收到的资料直接回答原问题，附上支持具体结论的来源链接。' }] });
                 await agent.whenIdle();
                 const continued = (await this.readEvents(agent, sessionId)).slice(afterFirst);
                 const index = continued.findIndex(event => {
@@ -243,10 +243,16 @@ export class DshAgentExecutor {
                 const finalEvents = eventsForTurn(continued, turn);
                 const end = finalEvents.at(-1);
                 const answer = parseQqControlBlocks(parseQqSpells(extractAssistantText(finalEvents) ?? '').visibleText).visibleText;
-                if (end?.type !== 'turn/end' || end.data?.reason?.kind !== 'completed' || !answer) {
+                if (end?.type !== 'turn/end' || end.data?.reason?.kind !== 'completed') {
                     throw new Error('资料已返回，回复未完成。');
                 }
-                return answer;
+                if (!answer)
+                    return '这次查询还没整理出可靠的答复。';
+                const cited = new Set(Array.from(answer.matchAll(/\[(\d+)\]/gu), match => match[1]));
+                const links = Array.from(feedback.history.matchAll(/^(\d+)\. (.+)\n(https?:\/\/\S+)$/gmu))
+                    .filter(([, number, , url]) => cited.has(number) && !answer.includes(url))
+                    .map(([, number, title, url]) => `[${number}] ${title}\n${url}`);
+                return links.length ? `${answer}\n\n${links.join('\n')}` : answer;
             }
         }
         if (text === null && events.some(event => isUnexecutedDsmlToolCall(extractLastAssistantText([event]) ?? ''))) {

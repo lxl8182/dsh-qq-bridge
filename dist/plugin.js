@@ -465,7 +465,7 @@ function wireDsh(ctx, agentCfg, interactions, attachWorkspace) {
                 id: randomUUID(),
                 role: 'user',
                 content,
-                source: { kind: 'user' },
+                source: { kind: 'user', qqLookup: true },
             };
             // 流式分段:订阅该会话的 session/event,按「句子边界 + 最大长度」聚合后回发。
             // 注意:text-delta 是逐 token 到达,若按时间窗批量会在 QQ 刷出单个词;

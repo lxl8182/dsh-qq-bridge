@@ -117,15 +117,19 @@ describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
     expect(dispose).toHaveBeenCalledOnce()
   })
 
-  it('awaits a research continuation in the same session and keeps the original QQ turn identity', async () => {
+  it.each([
+    ['我找到了一条试玩消息 [1]。', '我找到了一条试玩消息 [1]。\n\n[1] 试玩消息\nhttps://example.com/demo'],
+    ['<查资料>再次查找</查资料>', '这次查询还没整理出可靠的答复。'],
+  ])('ends the research after one continuation and keeps the original QQ turn identity for %s', async (reply, expected) => {
     const events: unknown[] = []
     function complete(turn: number, input: unknown, reply: string) {
       events.push({ type: 'turn/start', data: { turn } }, { type: 'user/message', data: input },
         { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: reply }] } } },
         { type: 'turn/end', data: { turn, reason: { kind: 'completed' } } })
     }
-    const followup = vi.fn((message: unknown) => complete(2, message, '我找到了一条试玩消息。'))
-    const resolveResearch = vi.fn(async () => ({ text: '【终端反馈·查资料】试玩消息', history: 'https://example.com/demo' }))
+    const followup = vi.fn((message: unknown) => complete(2, message, reply))
+    const history = '1. 试玩消息\nhttps://example.com/demo'
+    const resolveResearch = vi.fn(async () => ({ text: '【终端反馈·查资料】试玩消息', history }))
     const executor = new DshAgentExecutor({
       async getOrCreate() { return { followup, async whenIdle() {}, async dispose() {} } },
       async deliver() {
@@ -135,14 +139,13 @@ describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
       },
       async readSurface() { return events.slice() },
     }, { resolveResearch })
-    expect(await executor.run('private:owner', '最近有什么好玩的')).toBe('我找到了一条试玩消息。')
+    expect(await executor.run('private:owner', '最近有什么好玩的')).toBe(expected)
     const identity = executor.lastTurnIdentity('private:owner')
     expect(identity?.messageId).toBe('owner-message')
     expect(resolveResearch).toHaveBeenCalledOnce()
     expect(resolveResearch).toHaveBeenCalledWith(identity?.sessionId, '<查资料>试玩消息</查资料>')
-    expect(followup).toHaveBeenCalledWith(expect.objectContaining({
-      source: { kind: 'companion-research', history: 'https://example.com/demo' },
-    }))
+    expect(followup).toHaveBeenCalledOnce()
+    expect(followup).toHaveBeenCalledWith(expect.objectContaining({ source: { kind: 'companion-research', history } }))
     await executor.disposeAll()
   })
 

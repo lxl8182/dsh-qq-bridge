@@ -652,7 +652,7 @@ function wireDsh(
         id: randomUUID(),
         role: 'user',
         content,
-        source: { kind: 'user' },
+        source: { kind: 'user', qqLookup: true },
       }
 
       // 流式分段:订阅该会话的 session/event,按「句子边界 + 最大长度」聚合后回发。
