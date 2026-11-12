@@ -12,6 +12,9 @@ import type { DshSegmentPolicy } from './handlers/dsh-executor.js';
 /** DSH live agent 最小画面。 */
 interface DshAgent {
     session: DshSessionSubject;
+    model?: {
+        select(selection: BridgeModelSelection): void;
+    };
     followup(message: {
         id: string;
         role: string;
@@ -30,7 +33,7 @@ interface DshCtx extends InteractionCtxLike {
         resume?(ownerCtx: unknown, options: {
             resumeSessionId: string;
             agentOptions?: Record<string, unknown>;
-            setup?: (agentCtx: unknown) => void | Promise<void>;
+            setup?: (agentCtx: unknown, agent: DshAgent) => void | Promise<void>;
         }): Promise<{
             agent: DshAgent;
             dispose(): Promise<void>;
@@ -42,7 +45,7 @@ interface DshCtx extends InteractionCtxLike {
                 cwd?: string;
                 agentPreset?: string;
             };
-            setup?: (agentCtx: unknown) => void | Promise<void>;
+            setup?: (agentCtx: unknown, agent: DshAgent) => void | Promise<void>;
         }): Promise<{
             agent: DshAgent;
             dispose(): Promise<void>;
@@ -109,10 +112,12 @@ export interface DshWorkspace {
 }
 export interface DshWorkspaceRegistry {
     create(path: string): Promise<DshWorkspace>;
+    archiveSession?(sessionId: string): Promise<void>;
 }
 interface DshSessionSubject {
     id?: string;
     header?: {
+        cwd?: string;
         origin?: string;
     };
     snapshotEvents(): readonly unknown[];
@@ -122,6 +127,7 @@ interface BridgeChatClient {
     onMessage(cb: (evt: OnebotMessageEvent) => void): () => void;
     sendPrivate(userId: MessageTargetId, message: string, replyTarget?: PlatformReplyTarget): Promise<unknown>;
     sendPrivateAndWait?(userId: MessageTargetId, message: string, timeoutMs: number, uid: string): Promise<unknown>;
+    sendTextAndWait?(scope: 'private' | 'group', targetId: MessageTargetId, message: string): Promise<unknown>;
     sendGroup(groupId: MessageTargetId, message: string, replyTarget?: PlatformReplyTarget): Promise<unknown>;
     disconnect(): Promise<void>;
 }
@@ -158,7 +164,7 @@ export declare function makeDshExecutor(ctx: DshCtx, agentCfg?: {
     reasoningEffort?: string;
     models?: readonly string[];
     cwd?: string;
-}, interactions?: QqInteractionBridge, attachWorkspace?: (sessionId: string, cwd: string) => Promise<void>, llm?: () => DshLlmRuntime | undefined, commands?: () => DshCommandRuntime | undefined, resolveResearch?: QqBridgeEvents['resolveResearch']): DshAgentExecutor;
+}, interactions?: QqInteractionBridge, attachWorkspace?: (sessionId: string, cwd: string) => Promise<void>, llm?: () => DshLlmRuntime | undefined, commands?: () => DshCommandRuntime | undefined, resolveResearch?: QqBridgeEvents['resolveResearch'], archiveSession?: (sessionId: string) => Promise<void>): DshAgentExecutor;
 /** 段判定端口的安装点;只需要这一个方法,便于测试注入假 executor。 */
 type SegmentPolicyTarget = {
     setSegmentPolicy(policy: DshSegmentPolicy | undefined): void;
@@ -178,6 +184,7 @@ export declare function createSegmentPolicyAccess(ctx: DshCtx, executor: Segment
 };
 export declare function createWorkspaceAttachment(ctx: DshCtx): {
     attach(sessionId: string, cwd: string): Promise<void>;
+    archive(sessionId: string): Promise<void>;
     dispose(): void;
 };
 export declare function attachSessionToWorkspace(registry: DshWorkspaceRegistry, sessionId: string, cwd: string): Promise<void>;

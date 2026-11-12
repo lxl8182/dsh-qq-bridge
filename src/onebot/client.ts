@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { MessageTargetId, OnebotActionResponse, OnebotMessageEvent, PlatformReplyTarget } from './types.js'
 import { WebSocket, RawData } from 'ws'
 
@@ -167,8 +168,8 @@ export class OnebotClient {
   ) {}
 
   async connect(): Promise<void> {
+    this.unsub ??= this.transport.onFrame((frame) => this.handleFrame(frame))
     await this.transport.connect()
-    this.unsub = this.transport.onFrame((frame) => this.handleFrame(frame))
   }
 
   onMessage(cb: (evt: OnebotMessageEvent) => void): () => void {
@@ -193,7 +194,21 @@ export class OnebotClient {
     timeoutMs: number,
     uid: string,
   ): Promise<OnebotActionResponse> {
-    const echo = `keepalive_${uid}`
+    return this.sendAndWait({
+      action: 'send_private_msg', params: { user_id: userId, message }, echo: `keepalive_${uid}`,
+    }, timeoutMs)
+  }
+
+  sendTextAndWait(scope: 'private' | 'group', targetId: MessageTargetId, message: string): Promise<OnebotActionResponse> {
+    return this.sendAndWait({
+      action: `send_${scope}_msg`,
+      params: { [scope === 'private' ? 'user_id' : 'group_id']: targetId, message, auto_escape: true },
+      echo: `role_${randomUUID()}`,
+    }, 10_000)
+  }
+
+  private async sendAndWait(frame: { echo: string; action: string; params: Record<string, unknown> }, timeoutMs: number): Promise<OnebotActionResponse> {
+    const { echo } = frame
     const response = new Promise<OnebotActionResponse>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingActions.delete(echo)
@@ -203,7 +218,7 @@ export class OnebotClient {
       this.pendingActions.set(echo, { resolve, reject, timer })
     })
     try {
-      await this.flush({ action: 'send_private_msg', params: { user_id: userId, message }, echo })
+      await this.flush(frame)
     } catch (err) {
       const pending = this.pendingActions.get(echo)
       if (pending) clearTimeout(pending.timer)

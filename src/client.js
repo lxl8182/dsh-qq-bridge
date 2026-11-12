@@ -9,6 +9,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
     const NS = "dsh-qq-bridge";
     const NAPCAT_CHANNEL = "/dsh-qq-bridge-napcat";
+    const ROLE_IDS = ["gpt", "claude", "ds", "gemini"];
 
     exports.inject = ["slots", "connection", "remote", "remote.session", "configForms"];
     exports.apply = function apply(ctx) {
@@ -177,6 +178,11 @@ window.__ModuleLoader__.load({
         setGeneralDirty(true);
         setDraft((prev) => selectAgentModel(prev, modelCatalog, prev.agent.provider, model));
       };
+      const updateRole = (index, patch) => {
+        setGeneralDirty(true);
+        setDraft((prev) => setPath(prev, ["agent", "roles"], prev.agent.roles.map((role, i) =>
+          i === index ? { ...role, ...patch } : role)));
+      };
       const persist = async (ops) => {
         const latest = props.scope.getSnapshot();
         const revision = Math.max(latest.revision ?? 0, writeRevision.current ?? 0);
@@ -311,14 +317,18 @@ window.__ModuleLoader__.load({
         h("section", { style: styles.band },
           h("h3", { style: styles.sectionTitle }, "通用配置"),
           h("p", { style: styles.subtle }, "配置应用后重建桥接服务，无需重启 DSH 或 NapCat；现有 QQ Agent 会话会被释放。"),
-          h("div", { style: styles.grid },
+          selectField("聊天模式", draft.agent.mode, ["single", "multi"], disabled,
+            (value) => update(["agent", "mode"], value), { single: "单 Agent", multi: "四角色" }),
+          draft.agent.mode === "multi" ? h("div", { style: styles.stack },
+            ...draft.agent.roles.map((role, index) => h(RoleFields, { key: role.id, role, index, modelCatalog, disabled,
+              update: patch => updateRole(index, patch) })),
+          ) : h("div", { style: styles.stack }, h("div", { style: styles.grid },
             selectField("Provider", draft.agent.provider, providerOptions(modelCatalog, draft.agent.provider), disabled || modelCatalog.status !== "ready", updateAgentProvider),
             selectField("Model", draft.agent.model, modelOptionsForProvider(modelCatalog, draft.agent.provider, draft.agent.model), disabled || modelCatalog.status !== "ready", updateAgentModel),
             selectField("思考强度", draft.agent.reasoningEffort, reasoningOptions(modelCatalog, draft.agent.provider, draft.agent.model, draft.agent.reasoningEffort), disabled || modelCatalog.status !== "ready", (value) => update(["agent", "reasoningEffort"], value), { "": "模型默认" }),
             textField("默认工作目录", draft.agent.cwd, disabled, (value) => update(["agent", "cwd"], value)),
             readonlyField("超时", "不限制"),
           ),
-          modelCatalog.error ? h("p", { role: "alert", style: styles.error }, "模型目录加载失败：" + modelCatalog.error) : null,
           h("p", { style: styles.subtle }, "日常聊天建议 medium；复杂问题可用 high。可选档位由当前模型提供，模型默认沿用提供方设置。"),
           h("p", { style: styles.subtle }, "回复完成后按自然换行连发；代码与清单保持完整，推理过程不会发送。"),
           h("label", { style: styles.subtle },
@@ -330,17 +340,20 @@ window.__ModuleLoader__.load({
             friendMemoryRows.map(({ userId, state, checkedAt }) => h("li", { key: userId },
               userId + " · " + ({ enabled: "已启用", off: "已关闭", ungranted: "未授权", paused: "RIN 已暂停",
                 unavailable: "RIN 暂不可用" }[state] ?? state) + " · " + new Date(checkedAt).toLocaleString())))
-            : h("p", { style: styles.subtle }, "当前进程还没有好友判定记录。"),
+            : h("p", { style: styles.subtle }, "当前进程还没有好友判定记录。")),
+          modelCatalog.error ? h("p", { role: "alert", style: styles.error }, "模型目录加载失败：" + modelCatalog.error) : null,
           h("h4", { style: styles.sectionTitle }, "安全与权限"),
           h("div", { style: styles.grid },
             selectField("访问模式", draft.access.mode, ["whitelist", "open"], disabled, (value) => update(["access", "mode"], value)),
-            selectField("默认权限", draft.permissionDefault, ["workspace-write", "danger-full-access", "keep"], disabled, (value) => update(["permissionDefault"], value)),
+            draft.agent.mode === "single" ? selectField("默认权限", draft.permissionDefault, ["workspace-write", "danger-full-access", "keep"], disabled, (value) => update(["permissionDefault"], value)) : null,
             draft.platform === "napcat" ? textField("允许私聊的好友 QQ（逗号分隔）", draft.access.allowlistText, disabled,
               (value) => update(["access", "allowlistText"], value)) : null,
             textField("允许聊天的群（逗号分隔）", draft.access.groupAllowlistText, disabled,
               (value) => update(["access", "groupAllowlistText"], value)),
           ),
-          h("p", { style: styles.subtle }, "好友与群聊分别保留会话历史。好友记忆按 RIN 授权接入，群内 @机器人时回复。"),
+          h("p", { style: styles.subtle }, draft.agent.mode === "multi"
+            ? "每个私聊和群聊各用一份聊天记录。群内 @机器人时回复。"
+            : "好友与群聊分别保留会话历史。好友记忆按 RIN 授权接入，群内 @机器人时回复。"),
           h("label", { style: styles.checkbox },
             h("input", {
               type: "checkbox",
@@ -350,7 +363,7 @@ window.__ModuleLoader__.load({
             }),
             h("span", null, "非 QQ 会话 Agent 完成后提醒管理员"),
           ),
-          h("p", { style: styles.subtle }, "默认权限保存为 QQ bridge 配置意图；第一版不会自动改全局 permission.defaultPreset。"),
+          draft.agent.mode === "single" ? h("p", { style: styles.subtle }, "默认权限保存为 QQ bridge 配置意图；第一版不会自动改全局 permission.defaultPreset。") : null,
         ),
           h("div", { role: "group", "aria-label": "接入方式", style: styles.segment },
             choiceButton("NapCat / OneBot", draft.platform === "napcat", disabled, () => updatePlatform("napcat")),
@@ -391,6 +404,33 @@ window.__ModuleLoader__.load({
           ) : null,
         ),
         message ? (message.startsWith("NapCat 未安装") ? warnCard(message, [], "alert") : statusMessage(message, isErrorMessage(message))) : null,
+      );
+    }
+
+    function RoleFields({ role, index, modelCatalog, disabled, update }) {
+      const modelDisabled = disabled || modelCatalog.status !== "ready";
+      const selectModel = (provider, model) => {
+        const efforts = reasoningOptions(modelCatalog, provider, model, "");
+        update({ provider, model, reasoningEffort: efforts.includes(role.reasoningEffort) ? role.reasoningEffort : "" });
+      };
+      return h("fieldset", { style: styles.role },
+        h("legend", { style: styles.label }, `角色 ${index + 1}`),
+        h("div", { style: styles.grid },
+          textField("名称", role.name, disabled, name => update({ name })),
+          selectField("Provider", role.provider, ["", ...providerOptions(modelCatalog, role.provider)], modelDisabled, provider => {
+            const models = modelsForProvider(modelCatalog, provider).map(model => model.id);
+            selectModel(provider, models.includes(role.model) ? role.model : models[0] ?? "");
+          }, { "": "请选择" }),
+          selectField("Model", role.model, ["", ...modelOptionsForProvider(modelCatalog, role.provider, role.model)],
+            modelDisabled || !role.provider, model => selectModel(role.provider, model), { "": "请选择" }),
+          selectField("思考强度", role.reasoningEffort, reasoningOptions(modelCatalog, role.provider, role.model, role.reasoningEffort),
+            modelDisabled || !role.model, reasoningEffort => update({ reasoningEffort }), { "": "模型默认" }),
+        ),
+        h("label", { style: styles.field },
+          h("span", { style: styles.label }, "人设"),
+          h("textarea", { value: role.persona, disabled, rows: 4, style: styles.persona,
+            onChange: event => update({ persona: event.currentTarget.value }) }),
+        ),
       );
     }
 
@@ -823,6 +863,11 @@ window.__ModuleLoader__.load({
           mode: source.access?.mode === "open" ? "open" : "whitelist",
         },
         agent: {
+          mode: source.agent?.mode === "multi" ? "multi" : "single",
+          roles: ROLE_IDS.map((id, index) => ({
+            id, name: id, provider: "", model: "", reasoningEffort: "", persona: "",
+            ...source.agent?.roles?.[index],
+          })),
           preset: source.agent?.preset ?? "dsh-qq-bridge",
           friendMemoryEnabled: source.agent?.friendMemoryEnabled === true,
           provider: source.agent?.provider ?? "deepseek-official",
@@ -860,7 +905,7 @@ window.__ModuleLoader__.load({
 
     function generalOpsFromDraft(draft) {
       return [
-        ...["provider", "model", "reasoningEffort", "cwd", "friendMemoryEnabled"].map((key) => set(["agent", key], draft.agent[key])),
+        ...["provider", "model", "reasoningEffort", "cwd", "friendMemoryEnabled", "mode", "roles"].map((key) => set(["agent", key], draft.agent[key])),
         set(["access", "mode"], draft.access.mode),
         ...(draft.platform === "napcat" ? [set(["access", "allowlist"], splitLines(draft.access.allowlistText).map(Number))] : []),
         set(["access", "groupAllowlist"], splitLines(draft.access.groupAllowlistText)
@@ -899,6 +944,8 @@ window.__ModuleLoader__.load({
         set(["access", "commandPrefix"], draft.access.commandPrefix),
         set(["access", "mode"], draft.access.mode),
         set(["agent"], {
+          mode: draft.agent.mode,
+          roles: draft.agent.roles,
           friendMemoryEnabled: draft.agent.friendMemoryEnabled,
           preset: draft.agent.preset,
           provider: draft.agent.provider,
@@ -935,6 +982,17 @@ window.__ModuleLoader__.load({
       if (draft.platform === "napcat" && splitLines(draft.access.groupAllowlistText).some(id => !validQq(id))) return "群号请填写正整数，多个用逗号分隔。";
       if (!["whitelist", "open"].includes(draft.access.mode)) return "请选择有效的访问模式。";
       if (!["workspace-write", "danger-full-access", "keep"].includes(draft.permissionDefault)) return "请选择有效的默认权限。";
+      if (draft.agent.mode === "multi") {
+        if (new Set(draft.agent.roles.map(role => role.id)).size !== 4 || draft.agent.roles.some(role => !/^[a-zA-Z0-9_-]+$/.test(role.id))) {
+          return "四个角色的 id 必须互不重复，且只能包含字母、数字、下划线或连字符。";
+        }
+        for (const role of draft.agent.roles) {
+          if (!role.name.trim() || /[\r\n]/.test(role.name) || !role.provider.trim() || !role.model.trim() || !role.persona.trim()) {
+            return `请为 ${role.name.trim() || role.id} 填写单行名称、Provider、Model 和人设。`;
+          }
+        }
+        return "";
+      }
       if (!String(draft.agent.provider || "").trim()) return "请选择 Agent Provider。";
       if (!String(draft.agent.model || "").trim()) return "请选择 Agent Model。";
       if (!String(draft.agent.cwd || "").trim()) return "默认工作目录不能为空。";
@@ -1012,6 +1070,8 @@ window.__ModuleLoader__.load({
       field: { display: "grid", gap: 6, minWidth: 0, maxWidth: "100%", boxSizing: "border-box" },
       label: { fontSize: 12, color: "var(--dsw-alias-label-secondary)", minWidth: 0, overflowWrap: "anywhere" },
       input: { minWidth: 0, width: "100%", maxWidth: "100%", height: 34, boxSizing: "border-box", borderRadius: 6, border: "1px solid var(--dsw-alias-border-l1)", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)", padding: "0 10px", font: "inherit" },
+      role: { display: "grid", gap: 12, margin: 0, minWidth: 0, padding: 12, borderRadius: 6, border: "1px solid var(--dsw-alias-border-l1)" },
+      persona: { minWidth: 0, width: "100%", boxSizing: "border-box", resize: "vertical", borderRadius: 6, border: "1px solid var(--dsw-alias-border-l1)", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-primary)", padding: "8px 10px", font: "inherit" },
       readonly: { display: "block", minWidth: 0, width: "100%", maxWidth: "100%", minHeight: 34, boxSizing: "border-box", borderRadius: 6, border: "1px solid var(--dsw-alias-border-l1)", background: "var(--dsw-alias-bg-base)", color: "var(--dsw-alias-label-secondary)", padding: "7px 10px", font: "inherit", overflowWrap: "anywhere", whiteSpace: "normal" },
       warn: { border: "1px solid var(--dsw-alias-state-warning-primary, #b7791f)", borderRadius: 8, background: "color-mix(in srgb, var(--dsw-alias-state-warning-primary, #b7791f) 10%, transparent)", padding: 14, display: "grid", gap: 10, minWidth: 0, width: "100%", maxWidth: "100%", boxSizing: "border-box", overflow: "hidden" },
       warnTitle: { fontSize: 15, lineHeight: 1.55, fontWeight: 650, minWidth: 0, maxWidth: "100%", overflowWrap: "anywhere" },

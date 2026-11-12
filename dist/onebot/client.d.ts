@@ -58,6 +58,8 @@ export declare class OnebotClient {
     private handleFrame;
     /** 发送私聊并等待相同 echo 的 OneBot 动作响应，供保活健康探测使用。 */
     sendPrivateAndWait(userId: MessageTargetId, message: string, timeoutMs: number, uid: string): Promise<OnebotActionResponse>;
+    sendTextAndWait(scope: 'private' | 'group', targetId: MessageTargetId, message: string): Promise<OnebotActionResponse>;
+    private sendAndWait;
     sendPrivate(userId: MessageTargetId, message: string, _replyTarget?: PlatformReplyTarget): Promise<OnebotActionResponse>;
     sendGroup(groupId: MessageTargetId, message: string, _replyTarget?: PlatformReplyTarget): Promise<OnebotActionResponse>;
     private flush;

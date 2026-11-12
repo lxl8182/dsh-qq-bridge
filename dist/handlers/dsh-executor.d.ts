@@ -1,6 +1,8 @@
 import type { AgentExecutor, DshSegmentInput } from './agent.js';
 import type { InboundImage } from '../onebot/images.js';
 import type { QqResearchResult } from '../bridge-events.js';
+import { type QqAgentRole, type RoleChatTurn } from './role-chat.js';
+import type { ActiveRoleInput } from './role-context.js';
 import { BridgeModelInfo, BridgeModelSelection, BridgeModelSelectionRef, PermissionController, SessionLifecycleController } from './model-control.js';
 export declare const QQ_RESEARCH_SOURCE = "companion-research";
 /**
@@ -53,6 +55,10 @@ export interface DshRenderedAgent {
     dispose(): Promise<void>;
     /** 原始 DSH agent 对象;需要调用 host 原生命令服务时使用。 */
     _commandAgent?: unknown;
+    roleInput?: {
+        current?: ActiveRoleInput;
+    };
+    roleNeedsHistoryLocation?: boolean;
 }
 export type DshCommandExecutor = (agent: unknown, line: string) => Promise<string | undefined>;
 /**
@@ -108,6 +114,10 @@ export interface DshServiceHandles {
         resume?: boolean;
         cwd?: string;
         modelSelection: BridgeModelSelectionRef;
+        /** When present, the agent receives only this role persona and chat history. */
+        roleContext?: {
+            persona: string;
+        };
     }): Promise<DshRenderedAgent>;
     /**
      * 投递用户消息并等待本轮完成。
@@ -115,11 +125,13 @@ export interface DshServiceHandles {
      */
     deliver(agent: DshRenderedAgent, prompt: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void, 
     /** 本轮随消息下载好的图片;实现方负责把它们变成 DSH 的 ImageBlock。 */
-    images?: readonly InboundImage[]): Promise<{
+    images?: readonly InboundImage[], roleTurn?: RoleChatTurn): Promise<{
         messageId: string;
     } | void>;
     /** 读取包含 turn/start/end 的完整会话事件，以定位本轮回复。 */
     readSurface(sessionId: string): Promise<readonly unknown[]>;
+    /** Persistently archive a completed DSH session. */
+    archiveSession?(sessionId: string): Promise<void>;
 }
 /**
  * A 内置 handler 的 DSH 实现 —— 多轮上下文版本。
@@ -139,6 +151,7 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
     private sessionVersions;
     private sessionSelections;
     private selectionRefs;
+    private roleContexts;
     private queues;
     /** 每个 sessionKey 最近一轮在 DSH 侧的会话与用户消息 id。 */
     private turnIdentities;
@@ -166,6 +179,9 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
         segmentPolicy?: DshSegmentPolicy;
     });
     run(sessionKey: string, payload: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void, images?: readonly InboundImage[]): Promise<string>;
+    runRole(sessionKey: string, role: QqAgentRole, turn: RoleChatTurn): Promise<string>;
+    ensureRoleSession(sessionKey: string, role: QqAgentRole): Promise<string>;
+    archiveRoleSession(sessionKey: string, roleId: string, sessionId: string): Promise<void>;
     /**
      * 每轮进模型前调用一次:先看该不该换段,再给出这一轮真正要用的会话 id。
      *

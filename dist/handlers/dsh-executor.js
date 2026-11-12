@@ -1,3 +1,4 @@
+import { roleSessionKeyOf } from './role-chat.js';
 import { parseQqControlBlocks, parseQqSpells } from './control.js';
 import { resolveConfiguredModels, } from './model-control.js';
 export const QQ_RESEARCH_SOURCE = 'companion-research';
@@ -125,6 +126,7 @@ export class DshAgentExecutor {
     sessionVersions = new Map();
     sessionSelections = new Map();
     selectionRefs = new Map();
+    roleContexts = new Map();
     queues = new Map();
     /** 每个 sessionKey 最近一轮在 DSH 侧的会话与用户消息 id。 */
     turnIdentities = new Map();
@@ -144,6 +146,40 @@ export class DshAgentExecutor {
     }
     async run(sessionKey, payload, onChunk, images) {
         return await this.enqueue(sessionKey, () => this.runNow(sessionKey, payload, onChunk, images));
+    }
+    async runRole(sessionKey, role, turn) {
+        const roleKey = roleSessionKeyOf(sessionKey, role.id);
+        return await this.enqueue(roleKey, () => this.runNow(roleKey, '', undefined, undefined, turn));
+    }
+    async ensureRoleSession(sessionKey, role) {
+        const roleKey = roleSessionKeyOf(sessionKey, role.id);
+        return await this.enqueue(roleKey, async () => {
+            if (!this.agents.has(roleKey)) {
+                const selection = await this.resolveSelection({
+                    provider: role.provider.trim(),
+                    model: role.model.trim(),
+                    ...(role.reasoningEffort.trim() ? { reasoningEffort: role.reasoningEffort.trim() } : {}),
+                });
+                this.setSelection(roleKey, selection);
+                this.roleContexts.set(roleKey, { persona: role.persona });
+            }
+            const { agent, sessionId } = await this.getOrCreateSessionAgent(roleKey);
+            if (!agent.roleNeedsHistoryLocation)
+                return sessionId;
+            // DSH's history API requires cwd in the immutable session header.
+            // Archive sessions made by the older bridge and keep the QQ transcript.
+            await this.archiveRoleSession(sessionKey, role.id, sessionId);
+            this.roleContexts.set(roleKey, { persona: role.persona });
+            return (await this.getOrCreateSessionAgent(roleKey)).sessionId;
+        });
+    }
+    async archiveRoleSession(sessionKey, roleId, sessionId) {
+        if (!this.dsh.archiveSession)
+            throw new Error('当前 DSH host 不支持归档角色会话。');
+        await this.dsh.archiveSession(sessionId);
+        const roleKey = roleSessionKeyOf(sessionKey, roleId);
+        if (this.sessions.get(roleKey) === sessionId)
+            await this.startNewSession(roleKey);
     }
     /**
      * 每轮进模型前调用一次:先看该不该换段,再给出这一轮真正要用的会话 id。
@@ -185,11 +221,13 @@ export class DshAgentExecutor {
             return undefined;
         return { sessionId: record.sessionId, messageId: record.messageId };
     }
-    async runNow(sessionKey, payload, onChunk, images) {
+    async runNow(sessionKey, payload, onChunk, images, roleTurn) {
         const { agent, sessionId } = await this.getOrCreateSessionAgent(sessionKey);
         this.turnIdentities.delete(sessionKey);
         const previousEventCount = (await this.readEvents(agent, sessionId)).length;
-        const delivered = await this.dsh.deliver(agent, payload, onChunk, images);
+        const delivered = roleTurn
+            ? await this.dsh.deliver(agent, payload, onChunk, images, roleTurn)
+            : await this.dsh.deliver(agent, payload, onChunk, images);
         const surface = await this.readEvents(agent, sessionId);
         let events = surface;
         let inputCommitted = !delivered;
@@ -223,6 +261,8 @@ export class DshAgentExecutor {
         if (user?.id)
             this.turnIdentities.set(sessionKey, { sessionId, messageId: user.id });
         const text = extractAssistantText(events);
+        if (roleTurn)
+            return text ?? '';
         if (text && user?.id && this.opts.resolveResearch) {
             const feedback = await this.opts.resolveResearch(sessionId, text);
             if (feedback) {
@@ -293,11 +333,8 @@ export class DshAgentExecutor {
     }
     /** 优先读 live agent 的实时会话日志,缺省则退回持久化 surface。 */
     async readEvents(agent, sessionId) {
-        if (typeof agent.readSurface === 'function') {
-            const live = await agent.readSurface();
-            if (live && live.length)
-                return live;
-        }
+        if (agent.readSurface)
+            return agent.readSurface();
         return this.dsh.readSurface(sessionId);
     }
     /** 主动丢弃某个会话的 live agent。 */
@@ -310,6 +347,7 @@ export class DshAgentExecutor {
         this.sessions.delete(sessionKey);
         this.restoredSessions.delete(sessionKey);
         this.queues.delete(sessionKey);
+        this.roleContexts.delete(sessionKey);
         // The identity belonged to the session that is gone; a new session must not
         // inherit it.
         this.turnIdentities.delete(sessionKey);
@@ -458,6 +496,7 @@ export class DshAgentExecutor {
         this.sessionVersions.clear();
         this.sessionSelections.clear();
         this.selectionRefs.clear();
+        this.roleContexts.clear();
         this.queues.clear();
         this.turnIdentities.clear();
         this.segmentSwitches.clear();
@@ -494,16 +533,21 @@ export class DshAgentExecutor {
     async getOrCreateSessionAgent(sessionKey) {
         const sessionIdExists = this.sessions.get(sessionKey);
         const sessionId = sessionIdExists ?? this.createSessionId(sessionKey);
-        this.sessions.set(sessionKey, sessionId);
         let agent = this.agents.get(sessionKey);
         if (!agent) {
+            const roleContext = this.roleContexts.get(sessionKey);
+            if (!roleContext)
+                this.sessions.set(sessionKey, sessionId);
             agent = await this.dsh.getOrCreate({
                 sessionKey,
                 sessionId,
                 resume: this.restoredSessions.has(sessionKey),
-                cwd: this.sessionCwds.get(sessionKey) ?? this.opts.defaultCwd,
+                cwd: roleContext ? undefined : this.sessionCwds.get(sessionKey) ?? this.opts.defaultCwd,
                 modelSelection: this.selectionRef(sessionKey),
+                ...(roleContext ? { roleContext } : {}),
             });
+            if (roleContext)
+                this.sessions.set(sessionKey, sessionId);
             this.agents.set(sessionKey, agent);
             this.restoredSessions.delete(sessionKey);
         }

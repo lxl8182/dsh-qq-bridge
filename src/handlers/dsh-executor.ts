@@ -1,6 +1,8 @@
 import type { AgentExecutor, DshSegmentInput } from './agent.js'
 import type { InboundImage } from '../onebot/images.js'
 import type { QqResearchResult } from '../bridge-events.js'
+import { roleSessionKeyOf, type QqAgentRole, type RoleChatTurn } from './role-chat.js'
+import type { ActiveRoleInput } from './role-context.js'
 import { parseQqControlBlocks, parseQqSpells } from './control.js'
 import {
   BridgeModelInfo,
@@ -141,6 +143,8 @@ export interface DshRenderedAgent {
   dispose(): Promise<void>
   /** 原始 DSH agent 对象;需要调用 host 原生命令服务时使用。 */
   _commandAgent?: unknown
+  roleInput?: { current?: ActiveRoleInput }
+  roleNeedsHistoryLocation?: boolean
 }
 
 export type DshCommandExecutor = (agent: unknown, line: string) => Promise<string | undefined>
@@ -199,6 +203,8 @@ export interface DshServiceHandles {
     resume?: boolean
     cwd?: string
     modelSelection: BridgeModelSelectionRef
+    /** When present, the agent receives only this role persona and chat history. */
+    roleContext?: { persona: string }
   }): Promise<DshRenderedAgent>
   /**
    * 投递用户消息并等待本轮完成。
@@ -210,9 +216,12 @@ export interface DshServiceHandles {
     onChunk?: (text: string, kind: 'text' | 'reasoning') => void,
     /** 本轮随消息下载好的图片;实现方负责把它们变成 DSH 的 ImageBlock。 */
     images?: readonly InboundImage[],
+    roleTurn?: RoleChatTurn,
   ): Promise<{ messageId: string } | void>
   /** 读取包含 turn/start/end 的完整会话事件，以定位本轮回复。 */
   readSurface(sessionId: string): Promise<readonly unknown[]>
+  /** Persistently archive a completed DSH session. */
+  archiveSession?(sessionId: string): Promise<void>
 }
 
 /**
@@ -231,6 +240,7 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
   private sessionVersions = new Map<string, number>()
   private sessionSelections = new Map<string, BridgeModelSelection>()
   private selectionRefs = new Map<string, BridgeModelSelectionRef>()
+  private roleContexts = new Map<string, { persona: string }>()
   private queues = new Map<string, Promise<void>>()
   /** 每个 sessionKey 最近一轮在 DSH 侧的会话与用户消息 id。 */
   private turnIdentities = new Map<string, { sessionId: string; messageId: string }>()
@@ -269,6 +279,45 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
     images?: readonly InboundImage[],
   ): Promise<string> {
     return await this.enqueue(sessionKey, () => this.runNow(sessionKey, payload, onChunk, images))
+  }
+
+  async runRole(
+    sessionKey: string,
+    role: QqAgentRole,
+    turn: RoleChatTurn,
+  ): Promise<string> {
+    const roleKey = roleSessionKeyOf(sessionKey, role.id)
+    return await this.enqueue(roleKey, () => this.runNow(roleKey, '', undefined, undefined, turn))
+  }
+
+  async ensureRoleSession(sessionKey: string, role: QqAgentRole): Promise<string> {
+    const roleKey = roleSessionKeyOf(sessionKey, role.id)
+    return await this.enqueue(roleKey, async () => {
+      if (!this.agents.has(roleKey)) {
+        const selection = await this.resolveSelection({
+          provider: role.provider.trim(),
+          model: role.model.trim(),
+          ...(role.reasoningEffort.trim() ? { reasoningEffort: role.reasoningEffort.trim() } : {}),
+        })
+        this.setSelection(roleKey, selection)
+        this.roleContexts.set(roleKey, { persona: role.persona })
+      }
+      const { agent, sessionId } = await this.getOrCreateSessionAgent(roleKey)
+      if (!agent.roleNeedsHistoryLocation) return sessionId
+
+      // DSH's history API requires cwd in the immutable session header.
+      // Archive sessions made by the older bridge and keep the QQ transcript.
+      await this.archiveRoleSession(sessionKey, role.id, sessionId)
+      this.roleContexts.set(roleKey, { persona: role.persona })
+      return (await this.getOrCreateSessionAgent(roleKey)).sessionId
+    })
+  }
+
+  async archiveRoleSession(sessionKey: string, roleId: string, sessionId: string): Promise<void> {
+    if (!this.dsh.archiveSession) throw new Error('当前 DSH host 不支持归档角色会话。')
+    await this.dsh.archiveSession(sessionId)
+    const roleKey = roleSessionKeyOf(sessionKey, roleId)
+    if (this.sessions.get(roleKey) === sessionId) await this.startNewSession(roleKey)
   }
 
   /**
@@ -315,12 +364,15 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
     payload: string,
     onChunk?: (text: string, kind: 'text' | 'reasoning') => void,
     images?: readonly InboundImage[],
+    roleTurn?: RoleChatTurn,
   ): Promise<string> {
     const { agent, sessionId } = await this.getOrCreateSessionAgent(sessionKey)
 
     this.turnIdentities.delete(sessionKey)
     const previousEventCount = (await this.readEvents(agent, sessionId)).length
-    const delivered = await this.dsh.deliver(agent, payload, onChunk, images)
+    const delivered = roleTurn
+      ? await this.dsh.deliver(agent, payload, onChunk, images, roleTurn)
+      : await this.dsh.deliver(agent, payload, onChunk, images)
     const surface = await this.readEvents(agent, sessionId)
     let events = surface
     let inputCommitted = !delivered
@@ -354,6 +406,7 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
     const user = extractLastUserMessage(events)
     if (user?.id) this.turnIdentities.set(sessionKey, { sessionId, messageId: user.id })
     const text = extractAssistantText(events)
+    if (roleTurn) return text ?? ''
     if (text && user?.id && this.opts.resolveResearch) {
       const feedback = await this.opts.resolveResearch(sessionId, text)
       if (feedback) {
@@ -422,10 +475,7 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
 
   /** 优先读 live agent 的实时会话日志,缺省则退回持久化 surface。 */
   private async readEvents(agent: DshRenderedAgent, sessionId: string): Promise<readonly unknown[]> {
-    if (typeof agent.readSurface === 'function') {
-      const live = await agent.readSurface()
-      if (live && live.length) return live
-    }
+    if (agent.readSurface) return agent.readSurface()
     return this.dsh.readSurface(sessionId)
   }
 
@@ -439,6 +489,7 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
     this.sessions.delete(sessionKey)
     this.restoredSessions.delete(sessionKey)
     this.queues.delete(sessionKey)
+    this.roleContexts.delete(sessionKey)
     // The identity belonged to the session that is gone; a new session must not
     // inherit it.
     this.turnIdentities.delete(sessionKey)
@@ -586,6 +637,7 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
     this.sessionVersions.clear()
     this.sessionSelections.clear()
     this.selectionRefs.clear()
+    this.roleContexts.clear()
     this.queues.clear()
     this.turnIdentities.clear()
     this.segmentSwitches.clear()
@@ -627,17 +679,20 @@ export class DshAgentExecutor implements AgentExecutor, PermissionController, Se
   private async getOrCreateSessionAgent(sessionKey: string): Promise<{ agent: DshRenderedAgent; sessionId: string }> {
     const sessionIdExists = this.sessions.get(sessionKey)
     const sessionId = sessionIdExists ?? this.createSessionId(sessionKey)
-    this.sessions.set(sessionKey, sessionId)
 
     let agent = this.agents.get(sessionKey)
     if (!agent) {
+      const roleContext = this.roleContexts.get(sessionKey)
+      if (!roleContext) this.sessions.set(sessionKey, sessionId)
       agent = await this.dsh.getOrCreate({
         sessionKey,
         sessionId,
         resume: this.restoredSessions.has(sessionKey),
-        cwd: this.sessionCwds.get(sessionKey) ?? this.opts.defaultCwd,
+        cwd: roleContext ? undefined : this.sessionCwds.get(sessionKey) ?? this.opts.defaultCwd,
         modelSelection: this.selectionRef(sessionKey),
+        ...(roleContext ? { roleContext } : {}),
       })
+      if (roleContext) this.sessions.set(sessionKey, sessionId)
       this.agents.set(sessionKey, agent)
       this.restoredSessions.delete(sessionKey)
     }

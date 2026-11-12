@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { DshAgentExecutor, extractLastAssistantText, hashKey, DshRenderedAgent, isUnexecutedDsmlToolCall } from '../src/handlers/dsh-executor.js'
 import { BridgeModelSelectionRef, installBridgeModelSelection } from '../src/handlers/model-control.js'
+import { roleSessionKeyOf } from '../src/handlers/role-chat.js'
 import { makeDshExecutor } from '../src/plugin.js'
 
 function surfaceEvent(type: string, content: unknown[]) {
@@ -115,6 +116,62 @@ describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
     expect(executor.lastTurnIdentity('private:owner')).toEqual({ sessionId: session.id, messageId: input.data.id })
     await executor.disposeAll()
     expect(dispose).toHaveBeenCalledOnce()
+  })
+
+  it('starts a turn after reset when the live log is empty and the history query cannot find it', async () => {
+    const readSession = vi.fn(async () => { throw new Error('session/not-found') })
+    const createAgent = vi.fn(async () => {
+      const events: unknown[] = []
+      return {
+        agent: {
+          session: { snapshotEvents: () => events },
+          followup(message: unknown) {
+            events.push(
+              { type: 'turn/start', data: { turn: 1 } },
+              { type: 'user/message', data: message },
+              { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '在。' }] } } },
+              { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } },
+            )
+          },
+          async whenIdle() {},
+        },
+        async dispose() {},
+      }
+    })
+    const executor = makeDshExecutor({ agentLoop: { createAgent }, sessionQuery: { readSession } } as never)
+    const key = 'private:owner'
+    const oldId = await executor.prepareSession(key)
+    await executor.startNewSession(key)
+    expect(await executor.run(key, '在吗')).toBe('在。')
+    expect(executor.currentSessionId(key)).not.toBe(oldId)
+    expect(readSession).not.toHaveBeenCalled()
+    await executor.disposeAll()
+  })
+
+  it('archives a restored role session without history metadata and opens a fresh role session', async () => {
+    const archiveSession = vi.fn(async () => {})
+    const dispose = vi.fn(async () => {})
+    const getOrCreate = vi.fn(async (options: { resume?: boolean }) => ({
+      followup() {}, async whenIdle() {}, dispose, roleNeedsHistoryLocation: options.resume,
+    }))
+    const executor = new DshAgentExecutor({
+      getOrCreate, archiveSession, async deliver() {}, async readSurface() { return [] },
+    })
+    const key = 'private:owner'
+    const role = { id: 'gpt', name: 'gpt', persona: '角色', provider: 'test', model: 'gpt', reasoningEffort: 'high' }
+    const roleKey = roleSessionKeyOf(key, role.id)
+    executor.restoreSessions([{ sessionKey: roleKey, sessionId: 'old-role' }])
+
+    const id = await executor.ensureRoleSession(key, role)
+    expect(id).not.toBe('old-role')
+    expect(archiveSession.mock.calls).toEqual([['old-role']])
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(getOrCreate.mock.calls.map(([options]) => options)).toMatchObject([
+      { sessionId: 'old-role', resume: true, roleContext: { persona: '角色' } },
+      { sessionId: id, resume: false, roleContext: { persona: '角色' } },
+    ])
+    expect(await executor.ensureRoleSession(key, role)).toBe(id)
+    await executor.disposeAll()
   })
 
   it.each([

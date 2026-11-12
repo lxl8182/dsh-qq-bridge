@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { WebSocket } from 'ws';
 function normalizeToken(token) {
     const trimmed = token?.trim();
@@ -152,8 +153,8 @@ export class OnebotClient {
         this.sendAction = sendAction;
     }
     async connect() {
+        this.unsub ??= this.transport.onFrame((frame) => this.handleFrame(frame));
         await this.transport.connect();
-        this.unsub = this.transport.onFrame((frame) => this.handleFrame(frame));
     }
     onMessage(cb) {
         return this.transport.onFrame((frame) => {
@@ -173,7 +174,19 @@ export class OnebotClient {
     }
     /** 发送私聊并等待相同 echo 的 OneBot 动作响应，供保活健康探测使用。 */
     async sendPrivateAndWait(userId, message, timeoutMs, uid) {
-        const echo = `keepalive_${uid}`;
+        return this.sendAndWait({
+            action: 'send_private_msg', params: { user_id: userId, message }, echo: `keepalive_${uid}`,
+        }, timeoutMs);
+    }
+    sendTextAndWait(scope, targetId, message) {
+        return this.sendAndWait({
+            action: `send_${scope}_msg`,
+            params: { [scope === 'private' ? 'user_id' : 'group_id']: targetId, message, auto_escape: true },
+            echo: `role_${randomUUID()}`,
+        }, 10_000);
+    }
+    async sendAndWait(frame, timeoutMs) {
+        const { echo } = frame;
         const response = new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.pendingActions.delete(echo);
@@ -183,7 +196,7 @@ export class OnebotClient {
             this.pendingActions.set(echo, { resolve, reject, timer });
         });
         try {
-            await this.flush({ action: 'send_private_msg', params: { user_id: userId, message }, echo });
+            await this.flush(frame);
         }
         catch (err) {
             const pending = this.pendingActions.get(echo);

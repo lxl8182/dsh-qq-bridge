@@ -3,7 +3,7 @@ import Schema from '@deepseek-ai/schemastery';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { DshQqBridgeConfig } from './config.js';
+import { DEFAULT_QQ_AGENT_ROLES, DshQqBridgeConfig } from './config.js';
 import { removeInsertItem, writeProfilePatchWithBackup } from './cli/dsh-profile.js';
 import { installQqBridgePreset } from './cli/qq-preset.js';
 import { inspectNapcatSettings, setupNapcatForSettings } from './napcat-status.js';
@@ -149,6 +149,15 @@ async function buildQqBridgeSettingsSchema() {
             mode: z.union(['whitelist', 'open']).default('whitelist'),
         }),
         agent: z.object({
+            mode: z.union(['single', 'multi']).default('single'),
+            roles: z.array(z.object({
+                id: z.string().default(''),
+                name: z.string().default(''),
+                provider: z.string().default(''),
+                model: z.string().default(''),
+                reasoningEffort: z.string().default(''),
+                persona: z.string().default(''),
+            })).default([...DEFAULT_QQ_AGENT_ROLES]),
             friendMemoryEnabled: z.boolean().default(false),
             preset: z.string().default('dsh-qq-bridge'),
             provider: z.string().default('deepseek-official'),

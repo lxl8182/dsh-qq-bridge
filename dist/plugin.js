@@ -6,6 +6,8 @@ import { MessageRouter } from './router.js';
 import { AccessGate } from './security.js';
 import { AgentRpcHandler } from './handlers/agent.js';
 import { DshAgentExecutor, eventsForTurn, extractAssistantText, isUnexecutedDsmlToolCall, QQ_RESEARCH_SOURCE } from './handlers/dsh-executor.js';
+import { RoleChatCoordinator, roleConfigurationError } from './handlers/role-chat.js';
+import { installRoleOnlyPrompt } from './handlers/role-context.js';
 import { DIR_COMMAND, resolveUserPath } from './handlers/directory.js';
 import { createSetCwdControlHandler, createNewSessionControlHandler, createSetModelControlHandler, createSetPermissionControlHandler, createSetReasoningEffortControlHandler, QqControlDispatcher, } from './handlers/control.js';
 import { createSaveMemoControlHandler, LazyCustomMemoryStore } from './handlers/custom-memory.js';
@@ -105,6 +107,12 @@ function createBridgeRuntime(ctx, events) {
 async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
     events?.setOutputLimit(cfg.agent.maxMessageLength);
     assertPlatformConfig(cfg);
+    const multiRole = cfg.agent.mode === 'multi';
+    if (multiRole) {
+        const error = roleConfigurationError(cfg.agent.roles);
+        if (error)
+            throw new Error(error);
+    }
     const officialMode = cfg.platform === 'official';
     if (events)
         events.platform = cfg.platform;
@@ -118,32 +126,73 @@ async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
         mode: cfg.access.mode,
     });
     const client = createBridgeClient(cfg);
-    const notifyAgentReply = agentReplyNotificationsEnabled(cfg);
-    const replyNotifier = notifyAgentReply
-        ? createAgentReplyNotifier(ctx, client, adminTarget)
-        : () => { };
+    const napcatQq = cfg.napcat.loginQq || cfg.access.adminQq;
+    const selfReplies = new Map();
+    const send = async (scope, targetId, text, replyTarget) => {
+        if (multiRole && !officialMode && scope === 'private' && String(targetId) === String(napcatQq)) {
+            // The self-log input reads the first line of this account's outgoing messages.
+            const now = Date.now();
+            for (const [line, expires] of selfReplies)
+                if (expires <= now)
+                    selfReplies.delete(line);
+            selfReplies.set(text.split(/\r?\n/, 1)[0].trim(), now + Math.max(60_000, cfg.selfLogInput.pollIntervalMs * 2));
+        }
+        if (multiRole && client.sendTextAndWait)
+            return client.sendTextAndWait(scope, targetId, text);
+        return scope === 'private' ? client.sendPrivate(targetId, text, replyTarget) : client.sendGroup(targetId, text, replyTarget);
+    };
     const outbound = async (scope, targetId, text, replyTarget) => {
-        if (scope === 'private')
-            await client.sendPrivate(targetId, text, replyTarget);
-        else
-            await client.sendGroup(targetId, text, replyTarget);
+        await send(scope, targetId, text, replyTarget);
     };
     // The receipt variant returns whatever platform message id the transport
     // reports; a transport that reports none is not an error, it just leaves the
     // accepted part without an id.
     const outboundWithReceipt = async (scope, targetId, text, replyTarget) => {
-        const result = scope === 'private'
-            ? await client.sendPrivate(targetId, text, replyTarget)
-            : await client.sendGroup(targetId, text, replyTarget);
+        const result = await send(scope, targetId, text, replyTarget);
         const platformId = readPlatformMessageId(result);
         return platformId === undefined ? {} : { platformId };
     };
+    const accountKey = createHash('sha256').update(JSON.stringify([cfg.platform, adminTarget,
+        officialMode ? cfg.official.appId : cfg.napcat.wsUrl,
+        ...(multiRole && !officialMode ? [napcatQq] : []),
+    ])).digest('hex').slice(0, 24);
+    const profile = ctx.get ? ctx.get('profileContext') : ctx.profileContext;
+    const stateDir = join(profile?.home ?? join(homedir(), '.dsh'), 'plugins', 'dsh-qq-bridge', accountKey);
+    const workspaceAttachment = createWorkspaceAttachment(ctx);
+    const llmAccess = createDshLlmAccess(ctx);
+    if (multiRole) {
+        const router = new MessageRouter(gate, outbound, undefined, outboundWithReceipt);
+        const executor = makeDshExecutor(ctx, cfg.agent, undefined, undefined, llmAccess.current, undefined, undefined, workspaceAttachment.archive);
+        const roles = new RoleChatCoordinator(join(stateDir, 'role-chat.json'), cfg.agent.roles, executor, cfg.agent.maxMessageLength);
+        try {
+            await roles.open();
+        }
+        catch (error) {
+            workspaceAttachment.dispose();
+            llmAccess.dispose();
+            throw error;
+        }
+        const unregisterRoles = router.register(roles);
+        const replyNotifier = agentReplyNotificationsEnabled(cfg)
+            ? createAgentReplyNotifier(ctx, { sendPrivate: (id, text) => outbound('private', id, text) }, adminTarget)
+            : undefined;
+        const stopTransport = await startBridgeMessageTransport(cfg, client, router, evt => evt.message_type === 'private' && String(evt.user_id) === String(napcatQq)
+            && (selfReplies.get(evt.raw_message.split(/\r?\n/, 1)[0].trim()) ?? 0) > Date.now());
+        return async () => {
+            unregisterRoles();
+            await roles.dispose();
+            replyNotifier?.();
+            await stopTransport();
+            await executor.disposeAll();
+            workspaceAttachment.dispose();
+            llmAccess.dispose();
+        };
+    }
+    const replyNotifier = agentReplyNotificationsEnabled(cfg) ? createAgentReplyNotifier(ctx, client, adminTarget) : undefined;
     const interactions = new QqInteractionBridge(outbound, cfg.access.commandPrefix);
     const unregisterInteractions = interactions.register(ctx);
     const webActivity = DshWebActivityGate.register(ctx);
     const router = new MessageRouter(gate, outbound, interactions, outboundWithReceipt);
-    const workspaceAttachment = createWorkspaceAttachment(ctx);
-    const llmAccess = createDshLlmAccess(ctx);
     const commandsAccess = createDshCommandsAccess(ctx);
     const storageDomainAccess = createDshStorageDomainAccess(ctx);
     const customMemoryStore = new LazyCustomMemoryStore(storageDomainAccess.current);
@@ -173,12 +222,9 @@ async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
     if (cfg.shell.enabled) {
         unregisterShell = router.register(new ShellHandler(async (cmd) => ({ stdout: `(shell exec disabled) ${cmd}`, code: 1 })));
     }
-    const accountKey = createHash('sha256').update(JSON.stringify([cfg.platform, adminTarget,
-        officialMode ? cfg.official.appId : cfg.napcat.wsUrl])).digest('hex').slice(0, 24);
-    const profile = ctx.get ? ctx.get('profileContext') : ctx.profileContext;
     const agentHandler = new AgentRpcHandler(executor, {
         friendMemoryEnabled,
-        deliveryStatePath: join(profile?.home ?? join(homedir(), '.dsh'), 'plugins', 'dsh-qq-bridge', accountKey, 'delivery.json'),
+        deliveryStatePath: join(stateDir, 'delivery.json'),
         restoreContext: input => {
             const evt = { post_type: 'message', message_type: input.scope, user_id: input.userId,
                 group_id: input.groupId, raw_message: input.payload, message_id: input.messageId };
@@ -243,13 +289,12 @@ async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
         return agentHandler.deliverOutput(input, outputId, parts, canSend);
     });
     // RO04-B 接口钩子:只接线,不新增判断,也不在启动时触发任何恢复或会话创建。
-    // 两者都在插槽里,后注册覆盖先注册;events.dispose() 在卸载时清空。
-    events?.setIdentityVerifier(record => {
+    const disposeIdentityVerifier = events?.setIdentityVerifier(record => {
         const identity = { user_id: record.userId, message_type: record.scope, group_id: record.groupId };
         return record.owner ? gate.isOwner(identity) : record.scope === 'private'
             && !gate.isOwner(identity) && friendMemoryEnabled() && gate.allow(identity);
     });
-    events?.setSessionBinder(record => executor.prepareSession(record.sessionKey));
+    const disposeSessionBinder = events?.setSessionBinder(record => executor.prepareSession(record.sessionKey));
     // 主动推送通道:其他插件(例如记忆插件)有"没人可回填"的结果时,直接发到
     // 管理员私聊。发给谁、怎么发由桥接决定,调用方只给文字。
     const disposePusher = events?.setPusher
@@ -260,13 +305,43 @@ async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
         void agentHandler.retryPending().catch(err => console.warn(`[dsh-qq-bridge] delivery recovery failed: ${err instanceof Error ? err.message : String(err)}`));
     }, 15000);
     retryTimer.unref();
+    const stopTransport = await startBridgeMessageTransport(cfg, client, router);
+    return async () => {
+        clearInterval(retryTimer);
+        disposeSessionOutput();
+        disposeRetirer?.();
+        disposeReplay?.();
+        disposeOutputSender?.();
+        disposeIdentityVerifier?.();
+        disposeSessionBinder?.();
+        disposePusher?.();
+        await agentHandler.dispose();
+        unregisterAgent();
+        unregisterBridgeControl();
+        unregisterShell();
+        unregisterInteractions();
+        webActivity.dispose();
+        llmAccess.dispose();
+        commandsAccess.dispose();
+        storageDomainAccess.dispose();
+        workspaceAttachment.dispose();
+        segmentPolicyAccess.dispose();
+        taskScheduler.dispose();
+        await customMemoryStore.close();
+        replyNotifier?.();
+        await stopTransport();
+        await executor.disposeAll(); // 释放全部常驻 agent
+    };
+}
+async function startBridgeMessageTransport(cfg, client, router, isOwnReply) {
+    const officialMode = cfg.platform === 'official';
     // 连接健康检查失败不应拖垮整个 DSH Host 的插件挂载。
     // NapCat 模式保持静默并在后台自动重连；官方模式仍输出连接引导。
     // 依旧保持插件挂载(WS 端点在时才真正收发),避免瞬时断连导致整棵 tree 回滚。
     let recovery;
     const unsubMessages = client.onMessage((evt) => {
         recovery?.observeOnline();
-        if (!officialMode && isNapcatSelfKeepAliveMessage(evt.raw_message))
+        if (!officialMode && (isNapcatSelfKeepAliveMessage(evt.raw_message) || isOwnReply?.(evt)))
             return;
         void router.route(evt);
     });
@@ -297,7 +372,7 @@ async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
             replayOnStart: cfg.selfLogInput.replayOnStart,
         });
         selfLogInput.start((evt) => {
-            if (isNapcatSelfKeepAliveMessage(evt.raw_message))
+            if (isNapcatSelfKeepAliveMessage(evt.raw_message) || isOwnReply?.(evt))
                 return;
             recovery?.observeOnline();
             void router.route(evt);
@@ -306,30 +381,9 @@ async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
         });
     }
     return async () => {
-        clearInterval(retryTimer);
-        disposeSessionOutput();
-        disposeRetirer?.();
-        disposeReplay?.();
-        disposeOutputSender?.();
-        disposePusher?.();
-        await agentHandler.dispose();
-        unregisterAgent();
-        unregisterBridgeControl();
-        unregisterShell();
-        unregisterInteractions();
-        webActivity.dispose();
-        llmAccess.dispose();
-        commandsAccess.dispose();
-        storageDomainAccess.dispose();
-        workspaceAttachment.dispose();
-        segmentPolicyAccess.dispose();
-        taskScheduler.dispose();
         recovery?.stop();
-        await customMemoryStore.close();
         unsubMessages();
-        replyNotifier();
         selfLogInput?.stop();
-        await executor.disposeAll(); // 释放全部常驻 agent
         await client.disconnect();
     };
 }
@@ -363,8 +417,8 @@ export function readPlatformMessageId(result) {
     }
     return undefined;
 }
-export function makeDshExecutor(ctx, agentCfg, interactions, attachWorkspace, llm, commands, resolveResearch) {
-    const handles = wireDsh(ctx, agentCfg, interactions, attachWorkspace);
+export function makeDshExecutor(ctx, agentCfg, interactions, attachWorkspace, llm, commands, resolveResearch, archiveSession) {
+    const handles = wireDsh(ctx, agentCfg, interactions, attachWorkspace, archiveSession);
     const modelOptions = {
         defaultCwd: agentCfg?.cwd ? resolveUserPath(agentCfg.cwd) : undefined,
         defaultProvider: agentCfg?.provider,
@@ -391,7 +445,7 @@ export function makeDshExecutor(ctx, agentCfg, interactions, attachWorkspace, ll
     return new DshAgentExecutor(fallback, modelOptions);
 }
 /** 把真实 DSH 服务包装成 executor 所需的句柄。 */
-function wireDsh(ctx, agentCfg, interactions, attachWorkspace) {
+function wireDsh(ctx, agentCfg, interactions, attachWorkspace, archiveSession) {
     const loop = ctx.agentLoop;
     if (!loop)
         return undefined;
@@ -399,10 +453,13 @@ function wireDsh(ctx, agentCfg, interactions, attachWorkspace) {
     return {
         async getOrCreate(options) {
             void options.sessionKey;
-            if (ctx.agentPresets && agentCfg?.preset) {
+            const roleContext = options.roleContext;
+            const isolatedRole = roleContext !== undefined;
+            const roleInput = {};
+            if (!isolatedRole && ctx.agentPresets && agentCfg?.preset) {
                 console.info(`[dsh-qq-bridge] mounting agent preset "${agentCfg.preset}" for ${options.sessionId}`);
             }
-            else if (agentCfg?.preset) {
+            else if (!isolatedRole && agentCfg?.preset) {
                 console.warn(`[dsh-qq-bridge] agent preset "${agentCfg.preset}" requested but agentPresets service is unavailable`);
             }
             const cwd = options.cwd ?? workdir();
@@ -415,24 +472,40 @@ function wireDsh(ctx, agentCfg, interactions, attachWorkspace) {
                         ? {}
                         : { reasoningEffort: options.modelSelection.current.reasoningEffort }),
                 },
-                meta: { cwd, ...(agentCfg?.preset ? { agentPreset: agentCfg.preset } : {}) },
-                ...(ctx.agentPresets && agentCfg?.preset
-                    ? {
-                        setup: async (agentCtx) => {
+                // The history API requires a directory in the header. The role scope
+                // suppresses its prompt and keeps these sessions out of workspace attachment.
+                meta: isolatedRole ? { cwd: homedir() } : { cwd, ...(agentCfg?.preset ? { agentPreset: agentCfg.preset } : {}) },
+                setup: async (agentCtx, agent) => {
+                    if (roleContext) {
+                        installRoleOnlyPrompt(agentCtx, agent.session, roleContext.persona, roleInput);
+                        if (agent.model?.select)
+                            agent.model.select(options.modelSelection.current);
+                        else
                             installBridgeModelSelection(agentCtx, options.modelSelection);
-                            await ctx.agentPresets.mount(agentCtx, agentCfg.preset);
-                        },
+                        return;
                     }
-                    : { setup: (agentCtx) => void installBridgeModelSelection(agentCtx, options.modelSelection) }),
+                    installBridgeModelSelection(agentCtx, options.modelSelection);
+                    if (ctx.agentPresets && agentCfg?.preset) {
+                        await ctx.agentPresets.mount(agentCtx, agentCfg.preset);
+                    }
+                },
             };
             if (options.resume && !loop.resume)
                 throw new Error('DSH 原生会话恢复接口不可用，已停止以保留历史。');
             const handle = options.resume
                 ? await loop.resume(ctx, { ...agentConfig, resumeSessionId: options.sessionId })
                 : await loop.createAgent(ctx, { ...agentConfig, sessionId: options.sessionId });
-            const sessionCwd = handle.agent.session.header?.cwd ?? cwd;
-            await attachWorkspace?.(options.sessionId, sessionCwd);
-            interactions?.bindAgent(options.sessionKey, handle.agent);
+            try {
+                if (!isolatedRole) {
+                    const sessionCwd = handle.agent.session.header?.cwd ?? cwd;
+                    await attachWorkspace?.(options.sessionId, sessionCwd);
+                    interactions?.bindAgent(options.sessionKey, handle.agent);
+                }
+            }
+            catch (error) {
+                await handle.dispose();
+                throw error;
+            }
             // 捕获 live session 对象:用于 session/event 过滤(流式分段)。
             const session = handle.agent.session;
             return {
@@ -451,22 +524,37 @@ function wireDsh(ctx, agentCfg, interactions, attachWorkspace) {
                 },
                 _session: session,
                 _commandAgent: handle.agent,
+                ...(isolatedRole ? { roleInput, roleNeedsHistoryLocation: options.resume && session.header?.cwd === undefined } : {}),
             };
         },
-        async deliver(agent, prompt, onChunk, images) {
+        async deliver(agent, prompt, onChunk, images, roleTurn) {
             // DSH 要求 user message 是「identified」的:必须带 id、role、source.kind。
             // 缺失 id 或 source 用 type 而非 kind,会在 session 校验时抛 「lacks an identified message」。
             //
             // 图片必须先经 attachments.saveImages() 取得持久引用,再以
             // { type: 'image', attachment } 进 content;直接塞 base64 会被 DSH 的
             // 内容校验拒绝。图片准入失败时退回纯文本,不让整轮失败。
-            const content = await buildDshUserContent(ctx, prompt, images);
+            const content = roleTurn ? [...roleTurn.history, ...roleTurn.current] : await buildDshUserContent(ctx, prompt, images);
             const msg = {
                 id: randomUUID(),
                 role: 'user',
                 content,
-                source: { kind: 'user', qqLookup: true },
+                source: roleTurn ? { kind: 'user' } : { kind: 'user', qqLookup: true },
             };
+            if (roleTurn) {
+                const input = agent.roleInput;
+                if (!input)
+                    throw new Error('DSH 角色会话未安装隔离。');
+                input.current = { id: msg.id, historyLength: roleTurn.history.length };
+                try {
+                    agent.followup(msg);
+                    await agent.whenIdle();
+                }
+                finally {
+                    delete input.current;
+                }
+                return { messageId: msg.id };
+            }
             // 流式分段:订阅该会话的 session/event,按「句子边界 + 最大长度」聚合后回发。
             // 注意:text-delta 是逐 token 到达,若按时间窗批量会在 QQ 刷出单个词;
             // 改为累积到完整句子/段落再回发,兼顾及时性与可读性。
@@ -554,6 +642,7 @@ function wireDsh(ctx, agentCfg, interactions, attachWorkspace) {
             }
             return admitted;
         },
+        archiveSession,
         async readSurface(sessionId) {
             if (!query)
                 return [];
@@ -805,6 +894,11 @@ export function createWorkspaceAttachment(ctx) {
     }
     return {
         attach,
+        async archive(sessionId) {
+            if (!registry?.archiveSession)
+                throw new Error('DSH 会话归档服务尚未就绪。');
+            await registry.archiveSession(sessionId);
+        },
         dispose() {
             for (const dispose of disposers.splice(0))
                 dispose();

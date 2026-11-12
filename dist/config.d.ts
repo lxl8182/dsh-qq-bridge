@@ -1,4 +1,33 @@
 import { z } from 'zod';
+export declare const DEFAULT_QQ_AGENT_ROLES: readonly [{
+    readonly id: "gpt";
+    readonly name: "gpt";
+    readonly provider: "";
+    readonly model: "";
+    readonly reasoningEffort: "";
+    readonly persona: "";
+}, {
+    readonly id: "claude";
+    readonly name: "claude";
+    readonly provider: "";
+    readonly model: "";
+    readonly reasoningEffort: "";
+    readonly persona: "";
+}, {
+    readonly id: "ds";
+    readonly name: "ds";
+    readonly provider: "";
+    readonly model: "";
+    readonly reasoningEffort: "";
+    readonly persona: "";
+}, {
+    readonly id: "gemini";
+    readonly name: "gemini";
+    readonly provider: "";
+    readonly model: "";
+    readonly reasoningEffort: "";
+    readonly persona: "";
+}];
 declare const DshQqBridgeConfig: z.ZodObject<{
     /** Bundle 默认保持 inert；setup 或 Web 设置保存后显式启用。 */
     enabled: z.ZodDefault<z.ZodBoolean>;
@@ -68,6 +97,33 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         commandPrefix?: string | undefined;
     }>>;
     agent: z.ZodDefault<z.ZodObject<{
+        /** single 保留现有 QQ 会话；multi 并行运行四个无工具角色。 */
+        mode: z.ZodDefault<z.ZodEnum<["single", "multi"]>>;
+        roles: z.ZodDefault<z.ZodArray<z.ZodObject<{
+            /** 稳定会话键的一部分；修改后会创建新的角色会话。 */
+            id: z.ZodDefault<z.ZodString>;
+            /** QQ 回复前缀及聊天记录中的说话者名称。 */
+            name: z.ZodDefault<z.ZodString>;
+            provider: z.ZodDefault<z.ZodString>;
+            model: z.ZodDefault<z.ZodString>;
+            reasoningEffort: z.ZodDefault<z.ZodString>;
+            /** 该角色唯一的系统人设正文。 */
+            persona: z.ZodDefault<z.ZodString>;
+        }, "strip", z.ZodTypeAny, {
+            name: string;
+            reasoningEffort: string;
+            model: string;
+            id: string;
+            provider: string;
+            persona: string;
+        }, {
+            name?: string | undefined;
+            reasoningEffort?: string | undefined;
+            model?: string | undefined;
+            id?: string | undefined;
+            provider?: string | undefined;
+            persona?: string | undefined;
+        }>, "many">>;
         friendMemoryEnabled: z.ZodDefault<z.ZodBoolean>;
         /** DSH Web 的 agent preset;存在 agentPresets 服务时默认挂 QQ bridge 专用 preset。 */
         preset: z.ZodDefault<z.ZodOptional<z.ZodString>>;
@@ -115,8 +171,17 @@ declare const DshQqBridgeConfig: z.ZodObject<{
     }, "strip", z.ZodTypeAny, {
         model: string;
         preset: string;
+        mode: "single" | "multi";
         friendMemoryEnabled: boolean;
         provider: string;
+        roles: {
+            name: string;
+            reasoningEffort: string;
+            model: string;
+            id: string;
+            provider: string;
+            persona: string;
+        }[];
         models: string[];
         cwd: string;
         maxMessageLength: number;
@@ -132,8 +197,17 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         reasoningEffort?: string | undefined;
         model?: string | undefined;
         preset?: string | undefined;
+        mode?: "single" | "multi" | undefined;
         friendMemoryEnabled?: boolean | undefined;
         provider?: string | undefined;
+        roles?: {
+            name?: string | undefined;
+            reasoningEffort?: string | undefined;
+            model?: string | undefined;
+            id?: string | undefined;
+            provider?: string | undefined;
+            persona?: string | undefined;
+        }[] | undefined;
         models?: string[] | undefined;
         cwd?: string | undefined;
         maxMessageLength?: number | undefined;
@@ -201,8 +275,17 @@ declare const DshQqBridgeConfig: z.ZodObject<{
     agent: {
         model: string;
         preset: string;
+        mode: "single" | "multi";
         friendMemoryEnabled: boolean;
         provider: string;
+        roles: {
+            name: string;
+            reasoningEffort: string;
+            model: string;
+            id: string;
+            provider: string;
+            persona: string;
+        }[];
         models: string[];
         cwd: string;
         maxMessageLength: number;
@@ -257,8 +340,17 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         reasoningEffort?: string | undefined;
         model?: string | undefined;
         preset?: string | undefined;
+        mode?: "single" | "multi" | undefined;
         friendMemoryEnabled?: boolean | undefined;
         provider?: string | undefined;
+        roles?: {
+            name?: string | undefined;
+            reasoningEffort?: string | undefined;
+            model?: string | undefined;
+            id?: string | undefined;
+            provider?: string | undefined;
+            persona?: string | undefined;
+        }[] | undefined;
         models?: string[] | undefined;
         cwd?: string | undefined;
         maxMessageLength?: number | undefined;

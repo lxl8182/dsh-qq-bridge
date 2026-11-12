@@ -3,7 +3,7 @@ import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { installQqBridgeSettings, QqBridgeHostConfig } from '../src/settings.js'
-import { DshQqBridgeConfig } from '../src/config.js'
+import { DEFAULT_QQ_AGENT_ROLES, DshQqBridgeConfig } from '../src/config.js'
 
 describe('QQ bridge settings runtime wiring', () => {
   const previousDshHome = process.env.DSH_HOME
@@ -11,6 +11,16 @@ describe('QQ bridge settings runtime wiring', () => {
   afterEach(() => {
     if (previousDshHome === undefined) delete process.env.DSH_HOME
     else process.env.DSH_HOME = previousDshHome
+  })
+
+  it('passes the multi-role mode and independent model settings through the Host schema', () => {
+    const roles = DEFAULT_QQ_AGENT_ROLES.map(({ id, name }, index) => ({
+      id, name, provider: `provider-${id}`, model: `model-${id}`, reasoningEffort: index ? 'high' : '',
+      persona: `第一行\n${name}`,
+    }))
+    const parse = QqBridgeHostConfig as (value: unknown) => { get(): DshQqBridgeConfig }
+    const saved = parse({ agent: { mode: 'multi', roles } }).get()
+    expect(DshQqBridgeConfig.parse(saved).agent).toMatchObject({ mode: 'multi', roles })
   })
 
   it('reads the volatile entry and refreshes after a scoped Loader update', async () => {

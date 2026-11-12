@@ -1,6 +1,25 @@
 import { z } from 'zod'
 import { DEFAULT_QQ_REPLY_STYLE_SKILL_NAME } from './handlers/agent.js'
 
+export const DEFAULT_QQ_AGENT_ROLES = [
+  { id: 'gpt', name: 'gpt', provider: '', model: '', reasoningEffort: '', persona: '' },
+  { id: 'claude', name: 'claude', provider: '', model: '', reasoningEffort: '', persona: '' },
+  { id: 'ds', name: 'ds', provider: '', model: '', reasoningEffort: '', persona: '' },
+  { id: 'gemini', name: 'gemini', provider: '', model: '', reasoningEffort: '', persona: '' },
+] as const
+
+const QqAgentRole = z.object({
+  /** 稳定会话键的一部分；修改后会创建新的角色会话。 */
+  id: z.string().default(''),
+  /** QQ 回复前缀及聊天记录中的说话者名称。 */
+  name: z.string().default(''),
+  provider: z.string().default(''),
+  model: z.string().default(''),
+  reasoningEffort: z.string().default(''),
+  /** 该角色唯一的系统人设正文。 */
+  persona: z.string().default(''),
+})
+
 const DshQqBridgeConfig = z.object({
   /** Bundle 默认保持 inert；setup 或 Web 设置保存后显式启用。 */
   enabled: z.boolean().default(false),
@@ -39,6 +58,9 @@ const DshQqBridgeConfig = z.object({
     .default({ adminQq: 0 }),
   agent: z
     .object({
+      /** single 保留现有 QQ 会话；multi 并行运行四个无工具角色。 */
+      mode: z.enum(['single', 'multi']).default('single'),
+      roles: z.array(QqAgentRole).default([...DEFAULT_QQ_AGENT_ROLES]),
       friendMemoryEnabled: z.boolean().default(false),
       /** DSH Web 的 agent preset;存在 agentPresets 服务时默认挂 QQ bridge 专用 preset。 */
       preset: z.string().optional().default('dsh-qq-bridge'),
