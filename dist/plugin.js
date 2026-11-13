@@ -31,7 +31,7 @@ import { QQ_BRIDGE_EVENTS_SERVICE, QqBridgeEvents } from './bridge-events.js';
  */
 export const Config = QqBridgeHostConfig;
 export const name = 'dsh-qq-bridge';
-export const inject = ['agentLoop', 'agentPresets', 'sessionQuery'];
+export const inject = ['agentLoop', 'agentPresets', 'agents', 'sessionQuery'];
 export async function apply(ctx, options) {
     console.info('请到Web UI的设置中配置<QQ bridge>');
     const entry = readBridgeConfig(options);
@@ -162,7 +162,7 @@ async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
     const llmAccess = createDshLlmAccess(ctx);
     if (multiRole) {
         const router = new MessageRouter(gate, outbound, undefined, outboundWithReceipt);
-        const executor = makeDshExecutor(ctx, cfg.agent, undefined, undefined, llmAccess.current, undefined, undefined, workspaceAttachment.archive);
+        const executor = makeDshExecutor(ctx, cfg.agent, undefined, undefined, llmAccess.current, undefined, undefined, workspaceAttachment.archive, workspaceAttachment.isArchived);
         const roles = new RoleChatCoordinator(join(stateDir, 'role-chat.json'), cfg.agent.roles, executor, cfg.agent.maxMessageLength);
         try {
             await roles.open();
@@ -196,7 +196,7 @@ async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
     const commandsAccess = createDshCommandsAccess(ctx);
     const storageDomainAccess = createDshStorageDomainAccess(ctx);
     const customMemoryStore = new LazyCustomMemoryStore(storageDomainAccess.current);
-    const executor = makeDshExecutor(ctx, cfg.agent, interactions, workspaceAttachment.attach, llmAccess.current, commandsAccess.current, events?.resolveResearch.bind(events));
+    const executor = makeDshExecutor(ctx, cfg.agent, interactions, workspaceAttachment.attach, llmAccess.current, commandsAccess.current, events?.resolveResearch.bind(events), undefined, workspaceAttachment.isArchived);
     const segmentPolicyAccess = createSegmentPolicyAccess(ctx, executor);
     const taskScheduler = new InMemoryTaskScheduler({
         executor,
@@ -284,9 +284,10 @@ async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
     const disposeReplay = events?.setReplay(() => agentHandler.completedReports());
     const disposeOutputSender = events?.setOutputSender(async (sessionId, outputId, parts, canSend) => {
         const input = events.binding(sessionId);
-        if (!input || !events.canContact(sessionId))
-            throw new Error('QQ private session is not bound or allowed');
-        return agentHandler.deliverOutput(input, outputId, parts, canSend);
+        if (!input || !events.canContact(sessionId) || executor.isSessionArchived(sessionId)) {
+            throw new Error('QQ private session is unavailable for output');
+        }
+        return agentHandler.deliverOutput(input, outputId, parts, async () => !executor.isSessionArchived(sessionId) && await canSend());
     });
     // RO04-B 接口钩子:只接线,不新增判断,也不在启动时触发任何恢复或会话创建。
     const disposeIdentityVerifier = events?.setIdentityVerifier(record => {
@@ -417,8 +418,8 @@ export function readPlatformMessageId(result) {
     }
     return undefined;
 }
-export function makeDshExecutor(ctx, agentCfg, interactions, attachWorkspace, llm, commands, resolveResearch, archiveSession) {
-    const handles = wireDsh(ctx, agentCfg, interactions, attachWorkspace, archiveSession);
+export function makeDshExecutor(ctx, agentCfg, interactions, attachWorkspace, llm, commands, resolveResearch, archiveSession, isSessionArchived) {
+    const handles = wireDsh(ctx, agentCfg, interactions, attachWorkspace, archiveSession, isSessionArchived);
     const modelOptions = {
         defaultCwd: agentCfg?.cwd ? resolveUserPath(agentCfg.cwd) : undefined,
         defaultProvider: agentCfg?.provider,
@@ -445,11 +446,12 @@ export function makeDshExecutor(ctx, agentCfg, interactions, attachWorkspace, ll
     return new DshAgentExecutor(fallback, modelOptions);
 }
 /** 把真实 DSH 服务包装成 executor 所需的句柄。 */
-function wireDsh(ctx, agentCfg, interactions, attachWorkspace, archiveSession) {
+function wireDsh(ctx, agentCfg, interactions, attachWorkspace, archiveSession, isSessionArchived) {
     const loop = ctx.agentLoop;
     if (!loop)
         return undefined;
     const query = ctx.sessionQuery;
+    const agents = ctx.agents ?? ctx.get?.('agents');
     return {
         async getOrCreate(options) {
             void options.sessionKey;
@@ -492,39 +494,67 @@ function wireDsh(ctx, agentCfg, interactions, attachWorkspace, archiveSession) {
             };
             if (options.resume && !loop.resume)
                 throw new Error('DSH 原生会话恢复接口不可用，已停止以保留历史。');
-            const handle = options.resume
-                ? await loop.resume(ctx, { ...agentConfig, resumeSessionId: options.sessionId })
-                : await loop.createAgent(ctx, { ...agentConfig, sessionId: options.sessionId });
+            // Opening Web history can promote a cold QQ session to a live Agent.
+            const lookup = () => options.resume ? agents?.get(options.sessionId) : undefined;
+            let existingAgent = lookup();
+            let handle;
+            if (!existingAgent) {
+                try {
+                    handle = options.resume
+                        ? await loop.resume(ctx, { ...agentConfig, resumeSessionId: options.sessionId })
+                        : await loop.createAgent(ctx, { ...agentConfig, sessionId: options.sessionId });
+                }
+                catch (error) {
+                    if (!(error instanceof Error) || error.name !== 'SessionAlreadyOwnedError' || !options.resume || !agents)
+                        throw error;
+                    // A Web resume may have claimed the writer just before it publishes the Agent.
+                    for (let attempt = 0; !(existingAgent = lookup()) && attempt < 10; attempt++) {
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                    }
+                    if (!existingAgent)
+                        throw error;
+                }
+            }
+            const liveAgent = existingAgent ?? handle.agent;
+            // Keep the role prompt isolated when Web already owns the old session.
+            const replaceRoleSession = isolatedRole && (existingAgent !== undefined
+                || (options.resume === true && liveAgent.session.header?.cwd === undefined));
+            let releaseSelection;
             try {
+                if (existingAgent && !isolatedRole)
+                    releaseSelection = installBridgeModelSelection(existingAgent.ctx ?? {}, options.modelSelection);
                 if (!isolatedRole) {
-                    const sessionCwd = handle.agent.session.header?.cwd ?? cwd;
+                    const sessionCwd = liveAgent.session.header?.cwd ?? cwd;
                     await attachWorkspace?.(options.sessionId, sessionCwd);
-                    interactions?.bindAgent(options.sessionKey, handle.agent);
+                    interactions?.bindAgent(options.sessionKey, liveAgent);
                 }
             }
             catch (error) {
-                await handle.dispose();
+                releaseSelection?.();
+                await handle?.dispose();
                 throw error;
             }
             // 捕获 live session 对象:用于 session/event 过滤(流式分段)。
-            const session = handle.agent.session;
+            const session = liveAgent.session;
             return {
                 followup(message) {
-                    handle.agent.followup(message);
+                    liveAgent.followup(message);
                 },
                 async whenIdle() {
-                    await handle.agent.whenIdle();
+                    await liveAgent.whenIdle();
                 },
                 async readSurface() {
                     // rc.3 的完整日志含 turn/start/end；模型 surface 只有消息，不能用于定位轮次。
                     return session.snapshotEvents();
                 },
                 async dispose() {
-                    await handle.dispose();
+                    releaseSelection?.();
+                    await handle?.dispose();
                 },
+                ...(agents ? { isLive: () => agents.get(options.sessionId) === liveAgent } : {}),
                 _session: session,
-                _commandAgent: handle.agent,
-                ...(isolatedRole ? { roleInput, roleNeedsHistoryLocation: options.resume && session.header?.cwd === undefined } : {}),
+                _commandAgent: liveAgent,
+                ...(isolatedRole ? { ...(replaceRoleSession ? {} : { roleInput }), replaceRoleSession } : {}),
             };
         },
         async deliver(agent, prompt, onChunk, images, roleTurn) {
@@ -643,6 +673,7 @@ function wireDsh(ctx, agentCfg, interactions, attachWorkspace, archiveSession) {
             return admitted;
         },
         archiveSession,
+        isSessionArchived,
         async readSurface(sessionId) {
             if (!query)
                 return [];
@@ -894,6 +925,7 @@ export function createWorkspaceAttachment(ctx) {
     }
     return {
         attach,
+        isArchived: sessionId => registry?.archivedSessionIds?.includes(sessionId) === true,
         async archive(sessionId) {
             if (!registry?.archiveSession)
                 throw new Error('DSH 会话归档服务尚未就绪。');

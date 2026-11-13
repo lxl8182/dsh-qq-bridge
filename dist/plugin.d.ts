@@ -11,6 +11,7 @@ import { QqBridgeEvents } from './bridge-events.js';
 import type { DshSegmentPolicy } from './handlers/dsh-executor.js';
 /** DSH live agent 最小画面。 */
 interface DshAgent {
+    ctx?: unknown;
     session: DshSessionSubject;
     model?: {
         select(selection: BridgeModelSelection): void;
@@ -60,6 +61,9 @@ interface DshCtx extends InteractionCtxLike {
         }>;
     };
     workspaceRegistry?: DshWorkspaceRegistry;
+    agents?: {
+        get(sessionId: string): DshAgent | undefined;
+    };
     llm?: DshLlmRuntime;
     commands?: DshCommandRuntime;
     storageDomain?: DshStorageDomainRuntime;
@@ -111,6 +115,7 @@ export interface DshWorkspace {
     attachSession(sessionId: string): Promise<void>;
 }
 export interface DshWorkspaceRegistry {
+    readonly archivedSessionIds?: readonly string[];
     create(path: string): Promise<DshWorkspace>;
     archiveSession?(sessionId: string): Promise<void>;
 }
@@ -164,7 +169,7 @@ export declare function makeDshExecutor(ctx: DshCtx, agentCfg?: {
     reasoningEffort?: string;
     models?: readonly string[];
     cwd?: string;
-}, interactions?: QqInteractionBridge, attachWorkspace?: (sessionId: string, cwd: string) => Promise<void>, llm?: () => DshLlmRuntime | undefined, commands?: () => DshCommandRuntime | undefined, resolveResearch?: QqBridgeEvents['resolveResearch'], archiveSession?: (sessionId: string) => Promise<void>): DshAgentExecutor;
+}, interactions?: QqInteractionBridge, attachWorkspace?: (sessionId: string, cwd: string) => Promise<void>, llm?: () => DshLlmRuntime | undefined, commands?: () => DshCommandRuntime | undefined, resolveResearch?: QqBridgeEvents['resolveResearch'], archiveSession?: (sessionId: string) => Promise<void>, isSessionArchived?: (sessionId: string) => boolean): DshAgentExecutor;
 /** 段判定端口的安装点;只需要这一个方法,便于测试注入假 executor。 */
 type SegmentPolicyTarget = {
     setSegmentPolicy(policy: DshSegmentPolicy | undefined): void;
@@ -185,6 +190,7 @@ export declare function createSegmentPolicyAccess(ctx: DshCtx, executor: Segment
 export declare function createWorkspaceAttachment(ctx: DshCtx): {
     attach(sessionId: string, cwd: string): Promise<void>;
     archive(sessionId: string): Promise<void>;
+    isArchived(sessionId: string): boolean;
     dispose(): void;
 };
 export declare function attachSessionToWorkspace(registry: DshWorkspaceRegistry, sessionId: string, cwd: string): Promise<void>;

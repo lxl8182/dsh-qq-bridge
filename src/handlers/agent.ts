@@ -49,6 +49,13 @@ export function splitText(text: string, maxLen: number): string[] {
  * 生产环境由 Cordis 插件接入 DSH 的 agents/agentLoop 服务注入;
  * 测试时可注入一个假执行器,无需真实 DSH。
  */
+export class QqSessionArchivedError extends Error {
+  constructor() {
+    super('QQ 会话已归档，请重试这条消息。')
+    this.name = 'QqSessionArchivedError'
+  }
+}
+
 export interface AgentExecutor {
   prepareImages?(images: readonly InboundImage[]): Promise<InboundImage[]>
   prepareSession?(sessionKey: string, input?: DshSegmentInput): Promise<string>
@@ -69,6 +76,7 @@ export interface AgentExecutor {
      * 实现方必须容忍缺失:图片是增量能力,不是调用前提。
      */
     images?: readonly InboundImage[],
+    expectedSessionId?: string,
   ): Promise<string>
   /**
    * 本轮真实用户消息在 DSH 侧的身份(可选)。
@@ -499,26 +507,30 @@ export class AgentRpcHandler implements Handler {
       const memorySetting = friendMemoryEnabled === undefined ? {} : { friendMemoryEnabled }
       const segmentInput: DshSegmentInput | undefined = ctx.scope === 'private'
         ? { text: payload, imageCount: images.length, owner: ctx.owner, userId: ctx.userId, ...memorySetting } : undefined
-      const sessionId = await this.executor.prepareSession?.(sessionKey, segmentInput)
       const stored = this.active.get(ctx)
-      if (stored) { stored.sessionId = sessionId; stored.input.payload = payload; await this.delivery.save() }
-      await this.opts.prepareTurn?.({ sessionKey, sessionId, scope: ctx.scope, owner: ctx.owner,
-        userId: ctx.userId, groupId: ctx.groupId, messageId: ctx.messageId, input: ctx.payload, ...memorySetting,
-        ...(segmentInput?.friendMemoryStatus ? { friendMemoryStatus: segmentInput.friendMemoryStatus } : {}) })
-      if (this.stopped) return
-      if (stored) { stored.state = 'running'; await this.delivery.save() }
-      if (ackMessage) await this.respondChunk(ctx, ackMessage)
       const modelInput = ctx.scope === 'group'
-        ? `【群成员 ${ctx.senderName || ctx.userId} · ${ctx.userId}】\n${payload}` : payload
-      {
-        // AgentExecutor.run resolve 即本轮完成标志:DSH executor 在内部等待 agent.whenIdle()。
-        // 没有图片时保持两参调用:既有实现与测试都按这个形状断言。
-        const result = await withTimeout(
-          images.length === 0
-            ? this.executor.run(sessionKey, modelInput)
-            : this.executor.run(sessionKey, modelInput, undefined, images),
-          timeoutMs,
-        )
+        ? '【群成员 ' + (ctx.senderName || ctx.userId) + ' · ' + ctx.userId + '】\n' + payload : payload
+      for (let attempt = 0; ; attempt++) {
+        const sessionId = await this.executor.prepareSession?.(sessionKey, segmentInput)
+        if (stored) { stored.sessionId = sessionId; stored.input.payload = payload; await this.delivery.save() }
+        await this.opts.prepareTurn?.({ sessionKey, sessionId, scope: ctx.scope, owner: ctx.owner,
+          userId: ctx.userId, groupId: ctx.groupId, messageId: ctx.messageId, input: ctx.payload, ...memorySetting,
+          ...(segmentInput?.friendMemoryStatus ? { friendMemoryStatus: segmentInput.friendMemoryStatus } : {}) })
+        if (this.stopped || stored?.retired) return
+        if (stored) { stored.state = 'running'; await this.delivery.save() }
+        if (ackMessage && attempt === 0) await this.respondChunk(ctx, ackMessage)
+        let result: string
+        try {
+          const run = sessionId === undefined
+            ? (images.length === 0
+              ? this.executor.run(sessionKey, modelInput)
+              : this.executor.run(sessionKey, modelInput, undefined, images))
+            : this.executor.run(sessionKey, modelInput, undefined, images.length ? images : undefined, sessionId)
+          result = await withTimeout(run, timeoutMs)
+        } catch (error) {
+          if (attempt === 0 && error instanceof QqSessionArchivedError) continue
+          throw error
+        }
         if (this.stopped || stored?.retired) return
         if (stored) {
           stored.state = 'output'
@@ -533,7 +545,6 @@ export class AgentRpcHandler implements Handler {
         else this.observeTurn(ctx, sessionKey, payload, output.reply, output.parts, { status: output.status, generationStatus: 'completed' })
         return
       }
-
     } catch (err) {
       const stored = this.active.get(ctx)
       if (this.stopped || stored?.retired) return

@@ -1,4 +1,4 @@
-import type { AgentExecutor, DshSegmentInput } from './agent.js';
+import { type AgentExecutor, type DshSegmentInput } from './agent.js';
 import type { InboundImage } from '../onebot/images.js';
 import type { QqResearchResult } from '../bridge-events.js';
 import { type QqAgentRole, type RoleChatTurn } from './role-chat.js';
@@ -53,12 +53,13 @@ export interface DshRenderedAgent {
     readSurface?(): Promise<readonly unknown[]>;
     /** 销毁该会话底层的 DSH agent(释放资源)。 */
     dispose(): Promise<void>;
+    isLive?(): boolean;
     /** 原始 DSH agent 对象;需要调用 host 原生命令服务时使用。 */
     _commandAgent?: unknown;
     roleInput?: {
         current?: ActiveRoleInput;
     };
-    roleNeedsHistoryLocation?: boolean;
+    replaceRoleSession?: boolean;
 }
 export type DshCommandExecutor = (agent: unknown, line: string) => Promise<string | undefined>;
 /**
@@ -132,6 +133,7 @@ export interface DshServiceHandles {
     readSurface(sessionId: string): Promise<readonly unknown[]>;
     /** Persistently archive a completed DSH session. */
     archiveSession?(sessionId: string): Promise<void>;
+    isSessionArchived?(sessionId: string): boolean;
 }
 /**
  * A 内置 handler 的 DSH 实现 —— 多轮上下文版本。
@@ -153,10 +155,9 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
     private selectionRefs;
     private roleContexts;
     private queues;
+    private stopped;
     /** 每个 sessionKey 最近一轮在 DSH 侧的会话与用户消息 id。 */
     private turnIdentities;
-    /** 正在进行的换段,按来源去重:并发调用只会真正换一次。 */
-    private segmentSwitches;
     /** 最近一次换段的事实,只读输出给状态/排查。 */
     private segmentSwitchesLog;
     /**
@@ -178,22 +179,13 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
         /** 上下文分段端口;缺失时 executor 行为与未接线时完全一致。 */
         segmentPolicy?: DshSegmentPolicy;
     });
-    run(sessionKey: string, payload: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void, images?: readonly InboundImage[]): Promise<string>;
+    run(sessionKey: string, payload: string, onChunk?: (text: string, kind: 'text' | 'reasoning') => void, images?: readonly InboundImage[], expectedSessionId?: string): Promise<string>;
     runRole(sessionKey: string, role: QqAgentRole, turn: RoleChatTurn): Promise<string>;
     ensureRoleSession(sessionKey: string, role: QqAgentRole): Promise<string>;
     archiveRoleSession(sessionKey: string, roleId: string, sessionId: string): Promise<void>;
-    /**
-     * 每轮进模型前调用一次:先看该不该换段,再给出这一轮真正要用的会话 id。
-     *
-     * 换段点选在这里,是因为这是整个收发流程里**唯一**同时满足三件事的时刻:
-     * 上一轮的 `run()` 已经返回(它 resolve 即本轮完成)、气泡已按投递顺序发完、
-     * 而下一轮的输入还没有被受理。因此不必跟投递时序抢时间。
-     *
-     * 未注入 `segmentPolicy` 时这里只有一次原样的建会话调用,行为与接线前一致。
-     *
-     * @param sessionKey QQ 来源键。
-     * @returns 这一轮应当使用的 DSH 会话 id;刚换过段时就是新的那个。
-     */
+    private archiveRoleSessionNow;
+    isSessionArchived(sessionId: string): boolean;
+    /** 进模型前检查归档和段策略，再返回本轮要绑定的会话。 */
     prepareSession(sessionKey: string, input?: DshSegmentInput): Promise<string>;
     prepareImages(images: readonly InboundImage[]): Promise<InboundImage[]>;
     retireSessionId(sessionId: string): Promise<void>;
@@ -211,25 +203,12 @@ export declare class DshAgentExecutor implements AgentExecutor, PermissionContro
     runPermissionCommand(sessionKey: string, preset?: string): Promise<string>;
     /** 优先读 live agent 的实时会话日志,缺省则退回持久化 surface。 */
     private readEvents;
-    /** 主动丢弃某个会话的 live agent。 */
+    /** 释放 Agent，等宿主关闭写句柄后再清除旧映射。 */
     disposeSession(sessionKey: string): Promise<void>;
     startNewSession(sessionKey: string): Promise<void>;
-    /**
-     * 按策略判定并在需要时换段。
-     *
-     * 三条不变量:
-     * 1. **未注入策略时零行为变化**:直接返回,不建会话、不问任何问题;
-     * 2. 并发调用只真正换一次(按来源去重),否则两条消息会各换一次、白白丢掉
-     *    一段还在用的上下文;
-     * 3. 换段后调用方必须拿到新 sessionId —— 由 `prepareSession` 保证:换段把
-     *    `sessions` 里的映射清掉,紧接着的建会话必然产出新 id。
-     *
-     * 这里刻意不把换段塞进 `queues`:换段的原语 `disposeSession` 会删掉队列尾巴,
-     * 在队列任务内部调用它会让后续消息绕过仍在收尾的这一次。单独的
-     * `segmentSwitches` 表既能去重,也不干扰投递队列。
-     */
-    private maybeStartNewSegment;
-    /** 问一次策略、换一个会话、再通知一次。任何一步失败都只记录,不阻断聊天。 */
+    private resetSession;
+    private openSession;
+    private resetArchivedSession;
     private runSegmentSwitch;
     /**
      * 安装/替换段判定端口。

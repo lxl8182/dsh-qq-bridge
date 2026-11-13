@@ -19,6 +19,7 @@ export interface RoleChatRunner {
     ensureRoleSession(sessionKey: string, role: QqAgentRole): Promise<string>;
     runRole(sessionKey: string, role: QqAgentRole, turn: RoleChatTurn): Promise<string>;
     archiveRoleSession(sessionKey: string, roleId: string, sessionId: string): Promise<void>;
+    isSessionArchived?(sessionId: string): boolean;
     restoreSessions(sessions: readonly {
         sessionKey: string;
         sessionId: string;

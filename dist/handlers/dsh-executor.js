@@ -1,3 +1,4 @@
+import { QqSessionArchivedError } from './agent.js';
 import { roleSessionKeyOf } from './role-chat.js';
 import { parseQqControlBlocks, parseQqSpells } from './control.js';
 import { resolveConfiguredModels, } from './model-control.js';
@@ -128,10 +129,9 @@ export class DshAgentExecutor {
     selectionRefs = new Map();
     roleContexts = new Map();
     queues = new Map();
+    stopped = false;
     /** 每个 sessionKey 最近一轮在 DSH 侧的会话与用户消息 id。 */
     turnIdentities = new Map();
-    /** 正在进行的换段,按来源去重:并发调用只会真正换一次。 */
-    segmentSwitches = new Map();
     /** 最近一次换段的事实,只读输出给状态/排查。 */
     segmentSwitchesLog = new Map();
     /**
@@ -144,8 +144,8 @@ export class DshAgentExecutor {
         this.dsh = dsh;
         this.opts = opts;
     }
-    async run(sessionKey, payload, onChunk, images) {
-        return await this.enqueue(sessionKey, () => this.runNow(sessionKey, payload, onChunk, images));
+    async run(sessionKey, payload, onChunk, images, expectedSessionId) {
+        return await this.enqueue(sessionKey, () => this.runNow(sessionKey, payload, onChunk, images, undefined, expectedSessionId));
     }
     async runRole(sessionKey, role, turn) {
         const roleKey = roleSessionKeyOf(sessionKey, role.id);
@@ -164,49 +164,50 @@ export class DshAgentExecutor {
                 this.roleContexts.set(roleKey, { persona: role.persona });
             }
             const { agent, sessionId } = await this.getOrCreateSessionAgent(roleKey);
-            if (!agent.roleNeedsHistoryLocation)
+            if (!agent.replaceRoleSession)
                 return sessionId;
-            // DSH's history API requires cwd in the immutable session header.
-            // Archive sessions made by the older bridge and keep the QQ transcript.
-            await this.archiveRoleSession(sessionKey, role.id, sessionId);
+            // Keep the QQ transcript when the old role session cannot run with the bridge's isolated prompt
+            // or lacks the immutable cwd required by DSH's history API.
+            await this.archiveRoleSessionNow(roleKey, sessionId);
             this.roleContexts.set(roleKey, { persona: role.persona });
             return (await this.getOrCreateSessionAgent(roleKey)).sessionId;
         });
     }
     async archiveRoleSession(sessionKey, roleId, sessionId) {
+        const roleKey = roleSessionKeyOf(sessionKey, roleId);
+        await this.enqueue(roleKey, () => this.archiveRoleSessionNow(roleKey, sessionId));
+    }
+    async archiveRoleSessionNow(roleKey, sessionId) {
         if (!this.dsh.archiveSession)
             throw new Error('当前 DSH host 不支持归档角色会话。');
         await this.dsh.archiveSession(sessionId);
-        const roleKey = roleSessionKeyOf(sessionKey, roleId);
         if (this.sessions.get(roleKey) === sessionId)
-            await this.startNewSession(roleKey);
+            await this.resetSession(roleKey);
     }
-    /**
-     * 每轮进模型前调用一次:先看该不该换段,再给出这一轮真正要用的会话 id。
-     *
-     * 换段点选在这里,是因为这是整个收发流程里**唯一**同时满足三件事的时刻:
-     * 上一轮的 `run()` 已经返回(它 resolve 即本轮完成)、气泡已按投递顺序发完、
-     * 而下一轮的输入还没有被受理。因此不必跟投递时序抢时间。
-     *
-     * 未注入 `segmentPolicy` 时这里只有一次原样的建会话调用,行为与接线前一致。
-     *
-     * @param sessionKey QQ 来源键。
-     * @returns 这一轮应当使用的 DSH 会话 id;刚换过段时就是新的那个。
-     */
+    isSessionArchived(sessionId) {
+        return this.dsh.isSessionArchived?.(sessionId) === true;
+    }
+    /** 进模型前检查归档和段策略，再返回本轮要绑定的会话。 */
     async prepareSession(sessionKey, input) {
-        if (input)
-            await this.maybeStartNewSegment(sessionKey, input);
-        return (await this.getOrCreateSessionAgent(sessionKey)).sessionId;
+        return this.enqueue(sessionKey, async () => {
+            const sessionId = await this.openSession(sessionKey);
+            if (!input)
+                return sessionId;
+            return this.runSegmentSwitch(sessionKey, sessionId, input);
+        });
     }
     async prepareImages(images) {
         return this.dsh.prepareImages ? this.dsh.prepareImages(images) : [...images];
     }
     async retireSessionId(sessionId) {
         for (const [key, id] of this.sessions) {
-            if (id === sessionId) {
-                await this.startNewSession(key);
-                return;
-            }
+            if (id !== sessionId)
+                continue;
+            await this.enqueue(key, async () => {
+                if (this.sessions.get(key) === sessionId)
+                    await this.resetSession(key);
+            });
+            return;
         }
     }
     /**
@@ -221,8 +222,16 @@ export class DshAgentExecutor {
             return undefined;
         return { sessionId: record.sessionId, messageId: record.messageId };
     }
-    async runNow(sessionKey, payload, onChunk, images, roleTurn) {
+    async runNow(sessionKey, payload, onChunk, images, roleTurn, expectedSessionId) {
+        const previous = expectedSessionId ?? this.sessions.get(sessionKey);
+        if (previous && this.isSessionArchived(previous) && (expectedSessionId || roleTurn)) {
+            throw new QqSessionArchivedError();
+        }
+        if (!expectedSessionId && !roleTurn)
+            await this.resetArchivedSession(sessionKey);
         const { agent, sessionId } = await this.getOrCreateSessionAgent(sessionKey);
+        if (expectedSessionId && expectedSessionId !== sessionId)
+            throw new Error('QQ 会话已切换，请重试这条消息。');
         this.turnIdentities.delete(sessionKey);
         const previousEventCount = (await this.readEvents(agent, sessionId)).length;
         const delivered = roleTurn
@@ -249,6 +258,10 @@ export class DshAgentExecutor {
         }
         const lastEnd = [...events].reverse().find(event => event?.type === 'turn/end');
         const reason = lastEnd?.data?.reason;
+        if ((reason?.kind === 'blocked' || reason?.kind === 'aborted')
+            && !inputCommitted && this.isSessionArchived(sessionId)) {
+            throw new QqSessionArchivedError();
+        }
         if (reason?.kind === 'blocked' || reason?.kind === 'error' || reason?.kind === 'aborted') {
             throw new Error(reason.error?.message ?? `DSH turn ${reason.kind}`);
         }
@@ -325,6 +338,7 @@ export class DshAgentExecutor {
         return await this.enqueue(sessionKey, async () => {
             if (!this.opts.executeCommand)
                 return '当前 host 不支持权限切换。';
+            await this.resetArchivedSession(sessionKey);
             const { agent } = await this.getOrCreateSessionAgent(sessionKey);
             const line = preset?.trim() ? `/permission ${preset.trim()}` : '/permission';
             const text = await this.opts.executeCommand(agent._commandAgent ?? agent, line);
@@ -337,84 +351,62 @@ export class DshAgentExecutor {
             return agent.readSurface();
         return this.dsh.readSurface(sessionId);
     }
-    /** 主动丢弃某个会话的 live agent。 */
+    /** 释放 Agent，等宿主关闭写句柄后再清除旧映射。 */
     async disposeSession(sessionKey) {
-        const agent = this.agents.get(sessionKey);
-        if (agent) {
-            this.agents.delete(sessionKey);
-            await agent.dispose();
-        }
-        this.sessions.delete(sessionKey);
-        this.restoredSessions.delete(sessionKey);
-        this.queues.delete(sessionKey);
-        this.roleContexts.delete(sessionKey);
-        // The identity belonged to the session that is gone; a new session must not
-        // inherit it.
-        this.turnIdentities.delete(sessionKey);
+        await this.enqueue(sessionKey, () => this.resetSession(sessionKey));
     }
     async startNewSession(sessionKey) {
-        this.sessionVersions.set(sessionKey, this.getSessionVersion(sessionKey) + 1);
         await this.disposeSession(sessionKey);
     }
-    /**
-     * 按策略判定并在需要时换段。
-     *
-     * 三条不变量:
-     * 1. **未注入策略时零行为变化**:直接返回,不建会话、不问任何问题;
-     * 2. 并发调用只真正换一次(按来源去重),否则两条消息会各换一次、白白丢掉
-     *    一段还在用的上下文;
-     * 3. 换段后调用方必须拿到新 sessionId —— 由 `prepareSession` 保证:换段把
-     *    `sessions` 里的映射清掉,紧接着的建会话必然产出新 id。
-     *
-     * 这里刻意不把换段塞进 `queues`:换段的原语 `disposeSession` 会删掉队列尾巴,
-     * 在队列任务内部调用它会让后续消息绕过仍在收尾的这一次。单独的
-     * `segmentSwitches` 表既能去重,也不干扰投递队列。
-     */
-    async maybeStartNewSegment(sessionKey, input) {
-        if (!this.opts.segmentPolicy?.shouldStartNewSegment)
-            return;
-        const inFlight = this.segmentSwitches.get(sessionKey);
-        if (inFlight) {
-            await inFlight;
-            return;
-        }
-        const switchTask = this.runSegmentSwitch(sessionKey, input).finally(() => {
-            if (this.segmentSwitches.get(sessionKey) === switchTask)
-                this.segmentSwitches.delete(sessionKey);
-        });
-        this.segmentSwitches.set(sessionKey, switchTask);
-        await switchTask;
+    async resetSession(sessionKey) {
+        const agent = this.agents.get(sessionKey);
+        if (agent)
+            await agent.dispose();
+        this.agents.delete(sessionKey);
+        this.sessions.delete(sessionKey);
+        this.restoredSessions.delete(sessionKey);
+        this.roleContexts.delete(sessionKey);
+        this.turnIdentities.delete(sessionKey);
+        this.sessionVersions.set(sessionKey, this.getSessionVersion(sessionKey) + 1);
     }
-    /** 问一次策略、换一个会话、再通知一次。任何一步失败都只记录,不阻断聊天。 */
-    async runSegmentSwitch(sessionKey, input) {
+    async openSession(sessionKey) {
+        await this.resetArchivedSession(sessionKey);
+        return (await this.getOrCreateSessionAgent(sessionKey)).sessionId;
+    }
+    async resetArchivedSession(sessionKey) {
+        const previous = this.sessions.get(sessionKey);
+        if (previous && this.isSessionArchived(previous)) {
+            await this.resetSession(sessionKey);
+            this.segmentSwitchesLog.delete(sessionKey);
+            this.loggerFor('[dsh-qq-bridge] starting a new QQ session after archive: ' + previous);
+        }
+    }
+    async runSegmentSwitch(sessionKey, previousSessionId, input) {
         const policy = this.opts.segmentPolicy;
         if (!policy?.shouldStartNewSegment)
-            return;
-        const { sessionId: previousSessionId } = await this.getOrCreateSessionAgent(sessionKey);
+            return previousSessionId;
         let reason;
         try {
             reason = (await policy.shouldStartNewSegment(sessionKey, previousSessionId, input)) ?? undefined;
         }
         catch (error) {
-            // 判定失败不等于该换段:策略坏了应当保持原会话继续聊天,而不是每轮换一次。
-            this.loggerFor(`[dsh-qq-bridge] segment policy failed: ${messageOf(error)}`);
-            return;
+            this.loggerFor('[dsh-qq-bridge] segment policy failed: ' + messageOf(error));
         }
+        if (this.isSessionArchived(previousSessionId))
+            return this.openSession(sessionKey);
         if (!reason)
-            return;
-        await this.startNewSession(sessionKey);
-        const sessionId = (await this.getOrCreateSessionAgent(sessionKey)).sessionId;
+            return previousSessionId;
+        await this.resetSession(sessionKey);
+        const { sessionId } = await this.getOrCreateSessionAgent(sessionKey);
         this.segmentSwitchesLog.set(sessionKey, { reason, previousSessionId, sessionId, at: Date.now() });
-        this.loggerFor(`[dsh-qq-bridge] segment switched (${reason}): ${sessionKey} ${previousSessionId || '(none)'} -> ${sessionId}`);
-        if (!policy.carryOverText)
-            return;
+        this.loggerFor('[dsh-qq-bridge] segment switched (' + reason + '): ' + sessionKey + ' ' + previousSessionId + ' -> ' + sessionId);
         try {
-            await policy.carryOverText(sessionKey, previousSessionId, sessionId, reason);
+            await policy.carryOverText?.(sessionKey, previousSessionId, sessionId, reason);
         }
         catch (error) {
-            // 通知失败只会让新段少几句旧话,不影响这一轮能不能回。
-            this.loggerFor(`[dsh-qq-bridge] segment carry-over failed: ${messageOf(error)}`);
+            this.loggerFor('[dsh-qq-bridge] segment carry-over failed: ' + messageOf(error));
         }
+        return sessionId;
     }
     /**
      * 安装/替换段判定端口。
@@ -479,8 +471,10 @@ export class DshAgentExecutor {
     }
     /** 切换某个 QQ 来源的工作目录;下一轮会创建新的 DSH session。 */
     async setCwd(sessionKey, cwd) {
-        this.sessionCwds.set(sessionKey, cwd);
-        await this.startNewSession(sessionKey);
+        await this.enqueue(sessionKey, async () => {
+            this.sessionCwds.set(sessionKey, cwd);
+            await this.resetSession(sessionKey);
+        });
     }
     /** 当前 QQ 来源的工作目录;未切换时返回配置默认目录或 host cwd。 */
     getCwd(sessionKey) {
@@ -488,7 +482,10 @@ export class DshAgentExecutor {
     }
     /** 释放全部 live agent(插件 teardown 时调用)。 */
     async disposeAll() {
-        const agents = [...this.agents.values()];
+        this.stopped = true;
+        const close = Promise.allSettled([...this.agents.values()].map(agent => agent.dispose()));
+        await Promise.all(this.queues.values());
+        const results = await close;
         this.agents.clear();
         this.sessions.clear();
         this.restoredSessions.clear();
@@ -499,9 +496,10 @@ export class DshAgentExecutor {
         this.roleContexts.clear();
         this.queues.clear();
         this.turnIdentities.clear();
-        this.segmentSwitches.clear();
         this.segmentSwitchesLog.clear();
-        await Promise.all(agents.map((a) => a.dispose()));
+        const errors = results.filter(result => result.status === 'rejected').map(result => result.reason);
+        if (errors.length)
+            throw new AggregateError(errors, 'QQ 会话释放失败。');
     }
     /**
      * 当前 QQ 会话对应的 DSH session id,尚未建会话时为 undefined。
@@ -524,16 +522,31 @@ export class DshAgentExecutor {
         return this.agents.size;
     }
     async enqueue(sessionKey, task) {
-        const prev = this.queues.get(sessionKey) ?? Promise.resolve();
-        const next = prev.then(task);
-        // 吞掉队列尾部错误,避免串行链断掉后续消息
-        this.queues.set(sessionKey, next.then(() => undefined, () => undefined));
-        return await next;
+        const next = (this.queues.get(sessionKey) ?? Promise.resolve()).then(() => {
+            if (this.stopped)
+                throw new Error('QQ 会话执行器已关闭。');
+            return task();
+        });
+        const tail = next.then(() => undefined, () => undefined);
+        this.queues.set(sessionKey, tail);
+        try {
+            return await next;
+        }
+        finally {
+            if (this.queues.get(sessionKey) === tail)
+                this.queues.delete(sessionKey);
+        }
     }
     async getOrCreateSessionAgent(sessionKey) {
         const sessionIdExists = this.sessions.get(sessionKey);
         const sessionId = sessionIdExists ?? this.createSessionId(sessionKey);
         let agent = this.agents.get(sessionKey);
+        if (agent?.isLive?.() === false) {
+            this.agents.delete(sessionKey);
+            this.restoredSessions.add(sessionKey);
+            await agent.dispose();
+            agent = undefined;
+        }
         if (!agent) {
             const roleContext = this.roleContexts.get(sessionKey);
             if (!roleContext)
@@ -546,6 +559,10 @@ export class DshAgentExecutor {
                 modelSelection: this.selectionRef(sessionKey),
                 ...(roleContext ? { roleContext } : {}),
             });
+            if (this.stopped) {
+                await agent.dispose();
+                throw new Error('QQ 会话执行器已关闭。');
+            }
             if (roleContext)
                 this.sessions.set(sessionKey, sessionId);
             this.agents.set(sessionKey, agent);

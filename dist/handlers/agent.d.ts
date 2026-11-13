@@ -34,6 +34,9 @@ export declare function splitText(text: string, maxLen: number): string[];
  * 生产环境由 Cordis 插件接入 DSH 的 agents/agentLoop 服务注入;
  * 测试时可注入一个假执行器,无需真实 DSH。
  */
+export declare class QqSessionArchivedError extends Error {
+    constructor();
+}
 export interface AgentExecutor {
     prepareImages?(images: readonly InboundImage[]): Promise<InboundImage[]>;
     prepareSession?(sessionKey: string, input?: DshSegmentInput): Promise<string>;
@@ -50,7 +53,7 @@ export interface AgentExecutor {
      * 本轮随消息一起下载好的图片。缺省表示没有图片,或图片全部不可用。
      * 实现方必须容忍缺失:图片是增量能力,不是调用前提。
      */
-    images?: readonly InboundImage[]): Promise<string>;
+    images?: readonly InboundImage[], expectedSessionId?: string): Promise<string>;
     /**
      * 本轮真实用户消息在 DSH 侧的身份(可选)。
      *

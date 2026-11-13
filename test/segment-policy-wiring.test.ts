@@ -135,7 +135,7 @@ describe('RO02-CTX 段端口接线:记忆插件发布、桥接取用', () => {
     // 硬依赖会与 qqBridgeEvents 形成环:端口只能经可选 fiber 取用。
     expect(declared![1]).not.toContain('companionSegmentPolicy')
     expect(JSON.parse(declared![1].replace(/'/g, '"')))
-      .toEqual(['agentLoop', 'agentPresets', 'sessionQuery'])
+      .toEqual(['agentLoop', 'agentPresets', 'agents', 'sessionQuery'])
     // 接线存在,且创建/卸载两处都在。
     expect(source.match(/createSegmentPolicyAccess\(ctx, executor\)/g)).toHaveLength(1)
     expect(source).toContain('segmentPolicyAccess.dispose()')

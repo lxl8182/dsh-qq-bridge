@@ -22,6 +22,7 @@ export interface RoleChatRunner {
   ensureRoleSession(sessionKey: string, role: QqAgentRole): Promise<string>
   runRole(sessionKey: string, role: QqAgentRole, turn: RoleChatTurn): Promise<string>
   archiveRoleSession(sessionKey: string, roleId: string, sessionId: string): Promise<void>
+  isSessionArchived?(sessionId: string): boolean
   restoreSessions(sessions: readonly { sessionKey: string; sessionId: string }[]): void
 }
 
@@ -162,6 +163,11 @@ export class RoleChatCoordinator implements Handler {
       conversation.messages.some(message => message.platformKey === platformKey)
       || conversation.archives.some(archive => archive.messages.some(message => message.platformKey === platformKey))
     )) return
+
+    if (Object.values(conversation.sessions).some(id => this.runner.isSessionArchived?.(id))) {
+      conversation.reset = 'archive'
+      await this.finishReset(key, conversation)
+    }
 
     const sources = ctx.images ?? []
     const images = sources.length

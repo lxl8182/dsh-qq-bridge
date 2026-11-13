@@ -6,7 +6,7 @@ import { AgentRpcHandler, type DshSegmentInput, type QqTurnReport } from '../src
 import { DeliveryStore, type SavedInput } from '../src/delivery-store.js'
 import type { HandlerContext } from '../src/router.js'
 import { parseQqSpells, QqSpellDispatcher } from '../src/handlers/control.js'
-import { registerQqSessionOutput } from '../src/plugin.js'
+import { makeDshExecutor, registerQqSessionOutput } from '../src/plugin.js'
 import { QqBridgeEvents } from '../src/bridge-events.js'
 
 function context(send: NonNullable<HandlerContext['send']>): HandlerContext {
@@ -66,6 +66,62 @@ it('a friend reset survives restart and keeps the other friend bound to its orig
     expect(after.restorableSessions()).toContainEqual({ sessionKey: 'private:friend', sessionId: 'qq-fresh' })
     expect(after.restorableSessions()).toContainEqual({ sessionKey: 'private:other', sessionId: 'qq-other' })
   } finally { await before.dispose(); await after.dispose(); await rm(root, { recursive: true, force: true }) }
+})
+
+it('rebinds and sends once if Web archives a QQ session during turn admission', async () => {
+  const archived = new Set<string>()
+  const old = 'qq-old'
+  const other = 'qq-other'
+  const resume = vi.fn()
+  const opens: string[] = []
+  const inputs: unknown[] = []
+  const createAgent = async (_ctx: unknown, { sessionId }: { sessionId: string }) => {
+    opens.push(sessionId)
+    const events: unknown[] = []
+    return {
+      agent: {
+        session: { snapshotEvents: () => events },
+        followup(message: unknown) {
+          inputs.push(message)
+          events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: message },
+            { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '新会话回复' }] } } },
+            { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+        },
+        async whenIdle() {},
+      },
+      async dispose() {},
+    }
+  }
+  const executor = makeDshExecutor({ agentLoop: { createAgent, resume } } as never,
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, id => archived.has(id))
+  const key = 'private:owner'
+  const initial = await executor.prepareSession(key)
+  executor.restoreSessions([{ sessionKey: 'private:friend', sessionId: old }, { sessionKey: 'private:other', sessionId: other }])
+  archived.add(old)
+  expect(await executor.prepareSession('private:friend')).not.toBe(old)
+  expect(executor.currentSessionId('private:other')).toBe(other)
+  expect(resume).not.toHaveBeenCalled()
+
+  const bindings: Array<string | undefined> = []
+  const sent: string[] = []
+  const handler = new AgentRpcHandler(executor, {
+    ackMessage: '',
+    prepareTurn: async ({ sessionId }) => {
+      bindings.push(sessionId)
+      if (bindings.length === 1) archived.add(initial)
+    },
+  })
+  try {
+    await handler.run(context(async text => { sent.push(text); return {} }))
+    expect(bindings).toEqual([initial, executor.currentSessionId(key)])
+    expect(bindings[1]).not.toBe(initial)
+    expect(opens).toHaveLength(3)
+    expect(inputs).toHaveLength(1)
+    expect(sent).toEqual(['新会话回复'])
+  } finally {
+    await handler.dispose()
+    await executor.disposeAll()
+  }
 })
 
 it('external output retries keep stable indices and require a fresh permission check', async () => {

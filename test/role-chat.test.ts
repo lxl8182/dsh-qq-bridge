@@ -46,6 +46,7 @@ describe('QQ multi-role chat', () => {
       }),
       runRole: vi.fn<RoleChatRunner['runRole']>(async (_key, role) => `${role.id} replied`),
       prepareImages: vi.fn(async () => []),
+      isSessionArchived: vi.fn(() => false),
     }
     return runner
   }
@@ -137,6 +138,11 @@ describe('QQ multi-role chat', () => {
     expect(runner.archiveRoleSession).toHaveBeenCalledTimes(8)
     await next.send(3, 'after reset')
     expect(runner.runRole.mock.lastCall?.[2].history).toEqual([])
+    const webArchived = Object.values(active.sessions)[0]
+    runner.isSessionArchived.mockImplementation((id?: string) => id === webArchived)
+    await next.send(4, 'after Web archive')
+    expect(runner.archiveRoleSession).toHaveBeenCalledTimes(12)
+    expect(runner.runRole.mock.calls.slice(-4).every(([, , turn]) => turn.history.length === 0)).toBe(true)
     await restarted.dispose()
   })
 })

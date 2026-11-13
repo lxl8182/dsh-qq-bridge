@@ -84,6 +84,73 @@ describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
     await restarted.disposeAll()
   })
 
+  it('shares one restore and waits for close before reopening the QQ conversation', async () => {
+    const { dsh, state } = makeMock({})
+    const key = 'private:friend'
+    let opened!: () => void
+    let closed!: () => void
+    const opening = new Promise<void>(resolve => { opened = resolve })
+    const closing = new Promise<void>(resolve => { closed = resolve })
+    const started = vi.fn()
+    const getOrCreate = vi.fn(async (options: Parameters<typeof dsh.getOrCreate>[0]) => {
+      if (options.sessionId === 'saved') await opening
+      const agent = await dsh.getOrCreate(options)
+      if (options.sessionId === 'saved') {
+        const dispose = agent.dispose.bind(agent)
+        agent.dispose = async () => { started(); await closing; await dispose() }
+      }
+      return agent
+    })
+    const executor = new DshAgentExecutor({ ...dsh, getOrCreate })
+    executor.restoreSessions([{ sessionKey: key, sessionId: 'saved' }])
+    const requests = [executor.prepareSession(key), executor.prepareSession(key)]
+    await vi.waitFor(() => expect(getOrCreate).toHaveBeenCalledTimes(1))
+    opened()
+    expect(await Promise.all(requests)).toEqual(['saved', 'saved'])
+
+    const reset = executor.startNewSession(key)
+    const next = executor.prepareSession(key)
+    await vi.waitFor(() => expect(started).toHaveBeenCalledOnce())
+    expect(getOrCreate).toHaveBeenCalledTimes(1)
+    closed()
+    await reset
+    expect(await next).not.toBe('saved')
+    expect(state.drops).toEqual(['saved'])
+    expect(getOrCreate).toHaveBeenCalledTimes(2)
+    await executor.disposeAll()
+  })
+
+  it('uses a Web-resumed Agent without opening a second write handle or owning its teardown', async () => {
+    let published = false
+    const resume = vi.fn(async () => {
+      setTimeout(() => { published = true }, 10)
+      throw Object.assign(new Error('session is already owned by an active write handle'), { name: 'SessionAlreadyOwnedError' })
+    })
+    const events: unknown[] = []
+    const live = {
+      session: { snapshotEvents: () => events },
+      followup(message: unknown) {
+        events.push({ type: 'turn/start', data: { turn: 1 } }, { type: 'user/message', data: message },
+          { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '同一个会话' }] } } },
+          { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+      },
+      async whenIdle() {},
+    }
+    const executor = makeDshExecutor({
+      agents: { get: (id: string) => published && id === 'web-restored' ? live : undefined },
+      agentLoop: { resume },
+    } as never)
+    executor.restoreSessions([{ sessionKey: 'private:friend', sessionId: 'web-restored' }])
+    expect(await executor.run('private:friend', '继续')).toBe('同一个会话')
+    expect(resume).toHaveBeenCalledOnce()
+    await executor.disposeAll()
+    const next = makeDshExecutor({ agents: { get: () => live }, agentLoop: { resume } } as never)
+    next.restoreSessions([{ sessionKey: 'private:friend', sessionId: 'web-restored' }])
+    expect(await next.prepareSession('private:friend')).toBe('web-restored')
+    expect(resume).toHaveBeenCalledOnce()
+    await next.disposeAll()
+  })
+
   it('reads the rc.3 live log, retaining turn boundaries and the original input before spell followups', async () => {
     const events: unknown[] = []
     const session = { id: '', snapshotEvents: () => events }
@@ -152,7 +219,7 @@ describe('dsh-qq-bridge — DshAgentExecutor(多轮上下文)', () => {
     const archiveSession = vi.fn(async () => {})
     const dispose = vi.fn(async () => {})
     const getOrCreate = vi.fn(async (options: { resume?: boolean }) => ({
-      followup() {}, async whenIdle() {}, dispose, roleNeedsHistoryLocation: options.resume,
+      followup() {}, async whenIdle() {}, dispose, replaceRoleSession: options.resume,
     }))
     const executor = new DshAgentExecutor({
       getOrCreate, archiveSession, async deliver() {}, async readSurface() { return [] },
