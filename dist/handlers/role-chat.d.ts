@@ -10,10 +10,7 @@ export type RoleChatContent = {
     type: 'image';
     attachment: Attachment;
 };
-export interface RoleChatTurn {
-    history: readonly RoleChatContent[];
-    current: readonly RoleChatContent[];
-}
+export type RoleChatTurn = readonly RoleChatMessage[];
 export interface RoleChatRunner {
     prepareImages(images: readonly InboundImage[]): Promise<InboundImage[]>;
     ensureRoleSession(sessionKey: string, role: QqAgentRole): Promise<string>;
@@ -25,6 +22,16 @@ export interface RoleChatRunner {
         sessionId: string;
     }[]): void;
 }
+interface RoleChatMessage {
+    kind: 'user' | 'assistant';
+    speaker: string;
+    text: string;
+    at: number;
+    platformKey?: string;
+    attachments?: Attachment[];
+    delivery?: 'pending' | 'sent' | 'failed';
+}
+export declare function roleChatContent(message: RoleChatMessage): RoleChatContent[];
 export declare function roleSessionKeyOf(sessionKey: string, roleId: string): string;
 export declare function roleConfigurationError(roles: readonly QqAgentRole[]): string | undefined;
 /** Each QQ chat has one transcript and four independently persisted DSH sessions. */

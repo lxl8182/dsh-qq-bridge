@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_QQ_AGENT_ROLES } from '../src/config.js'
 import { RoleChatCoordinator, roleSessionKeyOf, type RoleChatRunner } from '../src/handlers/role-chat.js'
+import { installRoleOnlyPrompt, type ActiveRoleInput } from '../src/handlers/role-context.js'
 import { MessageRouter } from '../src/router.js'
 import { AccessGate } from '../src/security.js'
 
@@ -46,7 +47,7 @@ describe('QQ multi-role chat', () => {
       }),
       runRole: vi.fn<RoleChatRunner['runRole']>(async (_key, role) => `${role.id} replied`),
       prepareImages: vi.fn(async () => []),
-      isSessionArchived: vi.fn(() => false),
+      isSessionArchived: vi.fn((_id: string) => false),
     }
     return runner
   }
@@ -91,13 +92,12 @@ describe('QQ multi-role chat', () => {
     const secondTurn = runner.runRole.mock.calls.slice(4)
     expect(secondTurn).toHaveLength(4)
     for (const [, , turn] of secondTurn) {
-      expect(turn.history.map(block => block.type === 'text' && JSON.parse(block.text).text)).toEqual([
-        'first question', 'answer ds', 'answer gpt', 'answer gemini', 'answer claude',
+      expect(turn.map(message => message.text)).toEqual([
+        'first question', 'answer ds', 'answer gpt', 'answer gemini', 'answer claude', 'follow-up',
       ])
-      expect(turn.current).toEqual([{ type: 'text', text: '{"speaker":"用户","text":"follow-up"}\n' }])
     }
     await next.send(3, 'separate chat', 20)
-    expect(runner.runRole.mock.lastCall?.[2].history).toEqual([])
+    expect(runner.runRole.mock.lastCall?.[2].map(message => message.text)).toEqual(['separate chat'])
     await restored.dispose()
   })
 
@@ -137,12 +137,65 @@ describe('QQ multi-role chat', () => {
     await next.send(2, '/new-session')
     expect(runner.archiveRoleSession).toHaveBeenCalledTimes(8)
     await next.send(3, 'after reset')
-    expect(runner.runRole.mock.lastCall?.[2].history).toEqual([])
+    expect(runner.runRole.mock.lastCall?.[2].map(message => message.text)).toEqual(['after reset'])
     const webArchived = Object.values(active.sessions)[0]
-    runner.isSessionArchived.mockImplementation((id?: string) => id === webArchived)
+    runner.isSessionArchived.mockImplementation(id => id === webArchived)
     await next.send(4, 'after Web archive')
     expect(runner.archiveRoleSession).toHaveBeenCalledTimes(12)
-    expect(runner.runRole.mock.calls.slice(-4).every(([, , turn]) => turn.history.length === 0)).toBe(true)
+    for (const [, , turn] of runner.runRole.mock.calls.slice(-4)) {
+      expect(turn.map(message => message.text)).toEqual(['after Web archive'])
+    }
     await restarted.dispose()
+  })
+
+  it('keeps the committed transcript prefix and admits only new chat entries', async () => {
+    const system = { id: 'persona', role: 'system', content: [{ type: 'text', text: '角色' }] }
+    const previousUser = { id: 'previous', role: 'user', source: { kind: 'user', qqRoleIndex: 0 },
+      content: [{ type: 'text', text: '{"speaker":"用户","text":"first"}\n' }] }
+    const previousReply = { id: 'native-reply', role: 'assistant', content: [{ type: 'reasoning', text: 'private' }] }
+    const events = [
+      { type: 'system/message', data: { message: system } },
+      { type: 'user/message', data: previousUser },
+      { type: 'assistant/message', data: { message: previousReply } },
+    ]
+    const session = {
+      id: 'role-session',
+      surface: { nodes: [0, 1, 2] },
+      eventAt: (seq: number) => events[seq],
+      requestHeader: () => undefined,
+      append: vi.fn(),
+    }
+    const hooks = new Map<string, (...args: any[]) => unknown>()
+    const register = () => () => {}
+    const scope = {
+      on: (event: string, callback: (...args: any[]) => unknown) => hooks.set(event, callback),
+      systemPrompt: { section: register, context: register, suppressRuntimeContext: register },
+      tools: { restrict: register, guard: register },
+    }
+    const input: { current?: ActiveRoleInput } = { current: { id: 'current', transcript: [
+      { kind: 'user', speaker: '用户', text: 'first', at: 0 },
+      { kind: 'assistant', speaker: 'gemini', text: 'peer reply', at: 1 },
+      { kind: 'assistant', speaker: 'gpt', text: 'own visible reply', at: 2 },
+      { kind: 'user', speaker: '用户', text: 'second', at: 3 },
+    ] } }
+    installRoleOnlyPrompt(scope, session, '角色', input)
+    const currentUser = { id: 'current', role: 'user', content: [{ type: 'text', text: '{"speaker":"用户","text":"second"}\n' }] }
+    const decision = await hooks.get('agent/pre-step')!({ messages: [currentUser] }) as { messages: Array<{
+      id: string; source: { qqRoleIndex: number }; content: Array<{ text: string }>;
+    }> }
+    expect(decision.messages.map(message => message.source.qqRoleIndex)).toEqual([1, 2, 3])
+    expect(decision.messages.map(message => JSON.parse(message.content[0]!.text).text)).toEqual([
+      'peer reply', 'own visible reply', 'second',
+    ])
+    expect(decision.messages.at(-1)?.id).toBe('current')
+    await hooks.get('agent/request')!({ turn: 2, step: 1 }, async () => ({}))
+    expect(session.append).toHaveBeenCalledWith('system/message', expect.objectContaining({
+      message: expect.objectContaining({ content: [] }),
+    }), { surfaceOp: { op: 'replace', startSeq: 2, endSeq: 2 }, sourceEventSeqs: [2] })
+    const stream = hooks.get('llm/stream')!
+    const clean = [system, previousUser, ...decision.messages]
+    expect(stream({ sessionId: session.id, messages: clean }, () => 'dispatched')).toBe('dispatched')
+    expect(() => stream({ sessionId: session.id, messages: [...clean, previousReply] }, () => 'dispatched'))
+      .toThrow('QQ 角色请求含有聊天记录和人设之外的上下文。')
   })
 })

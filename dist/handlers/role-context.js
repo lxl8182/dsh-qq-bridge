@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { roleChatContent } from './role-chat.js';
 const PERSONA_SECTION = 'qq-role:persona';
 export function installRoleOnlyPrompt(agentCtx, agentSession, persona, input) {
     const scope = agentCtx;
@@ -31,33 +32,62 @@ export function installRoleOnlyPrompt(agentCtx, agentSession, persona, input) {
             const { tools: _previousTools, ...cleanHeader } = header;
             session.append('request/header', { header: cleanHeader, reason: 'series' });
         }
-        // Keep DSH's log and its reserved system node. Replace the previous model
-        // surface with the shared transcript, then let the loop admit this input.
-        const nodes = session.surface.nodes.slice(1);
-        if (nodes.length) {
-            const historyId = randomUUID();
-            session.append('user/message', {
-                id: historyId, role: 'user', source: { kind: 'user' },
-                content: message.content.slice(0, current.historyLength),
+        const [head, ...nodes] = session.surface.nodes;
+        const lastIndex = current.transcript.length - 1;
+        let nextIndex = 0;
+        const staleFrom = nodes.findIndex(seq => {
+            const event = session.eventAt(seq);
+            if (event?.type === 'system/message' && event.data.message?.content.length === 0)
+                return false;
+            const source = event?.data.source;
+            if (event?.type !== 'user/message' || source?.kind !== 'user'
+                || source.qqRoleIndex !== nextIndex || nextIndex === lastIndex)
+                return true;
+            nextIndex++;
+            return false;
+        });
+        if (staleFrom !== -1)
+            current.staleNodes = nodes.slice(staleFrom);
+        const messagesToAppend = current.transcript.slice(nextIndex).map((entry, offset) => {
+            const qqRoleIndex = nextIndex + offset;
+            return {
+                id: qqRoleIndex === lastIndex ? message.id : randomUUID(),
+                role: 'user',
+                content: qqRoleIndex === lastIndex ? message.content : roleChatContent(entry),
+                source: { kind: 'user', qqRoleIndex },
+            };
+        });
+        const personaChanged = head !== undefined && session.eventAt(head)?.data.message?.content[0]?.text !== persona;
+        return { kind: 'enter', messages: messagesToAppend, ...(personaChanged ? { startsRequestSeries: true } : {}) };
+    }, { prepend: true });
+    scope.on('agent/request', async ({ turn, step }, next) => {
+        const config = await next();
+        const current = input.current;
+        const nodes = current?.staleNodes;
+        if (current && nodes?.length) {
+            // Keep the original assistant event in the log. The shared replies are
+            // admitted in QQ order, without replaying the assistant's private blocks.
+            session.append('system/message', {
+                turn, step,
+                message: { id: randomUUID(), role: 'system', content: [], source: { kind: 'system-prompt' } },
             }, {
                 surfaceOp: { op: 'replace', startSeq: nodes[0], endSeq: nodes[nodes.length - 1] },
                 sourceEventSeqs: nodes,
             });
-            current.historyId = historyId;
-            return { kind: 'enter', messages: [{ ...message, content: message.content.slice(current.historyLength) }], startsRequestSeries: true };
+            delete current.staleNodes;
         }
-        return { kind: 'enter', messages: [message], startsRequestSeries: true };
+        return config;
     }, { prepend: true });
     scope.on('llm/stream', (request, next) => {
         if (request.sessionId !== session.id)
             return next();
         const current = input.current;
-        const [system, first] = request.messages;
-        const user = request.messages.at(-1);
-        if (!current || request.tools?.length || request.messages.length !== (current.historyId ? 3 : 2)
+        const [system, ...chat] = request.messages;
+        if (!current || request.tools?.length || chat.length !== current.transcript.length
             || system?.role !== 'system' || system.content.length !== 1 || system.content[0]?.text !== persona
-            || (current.historyId && (first?.role !== 'user' || first.id !== current.historyId))
-            || user?.role !== 'user' || user.id !== current.id) {
+            || chat.at(-1)?.id !== current.id
+            || chat.some((message, index) => message.role !== 'user' || message.source?.kind !== 'user'
+                || message.source.qqRoleIndex !== index)) {
             throw new Error('QQ 角色请求含有聊天记录和人设之外的上下文。');
         }
         return next();

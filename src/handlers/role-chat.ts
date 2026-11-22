@@ -12,10 +12,7 @@ import { NEW_SESSION_COMMAND } from './model-control.js'
 export type QqAgentRole = DshQqBridgeConfig['agent']['roles'][number]
 type Attachment = NonNullable<InboundImage['attachment']>
 export type RoleChatContent = { type: 'text'; text: string } | { type: 'image'; attachment: Attachment }
-export interface RoleChatTurn {
-  history: readonly RoleChatContent[]
-  current: readonly RoleChatContent[]
-}
+export type RoleChatTurn = readonly RoleChatMessage[]
 
 export interface RoleChatRunner {
   prepareImages(images: readonly InboundImage[]): Promise<InboundImage[]>
@@ -34,6 +31,13 @@ interface RoleChatMessage {
   platformKey?: string
   attachments?: Attachment[]
   delivery?: 'pending' | 'sent' | 'failed'
+}
+
+export function roleChatContent(message: RoleChatMessage): RoleChatContent[] {
+  return [
+    { type: 'text', text: JSON.stringify({ speaker: message.speaker, text: message.text }) + '\n' },
+    ...(message.attachments ?? []).map(attachment => ({ type: 'image' as const, attachment })),
+  ]
 }
 
 interface RoleChatArchive {
@@ -182,12 +186,8 @@ export class RoleChatCoordinator implements Handler {
       platformKey,
       ...(attachments.length ? { attachments } : {}),
     }
-    const contentOf = (message: RoleChatMessage): RoleChatContent[] => [
-      { type: 'text', text: JSON.stringify({ speaker: message.speaker, text: message.text }) + '\n' },
-      ...(message.attachments ?? []).map(attachment => ({ type: 'image' as const, attachment })),
-    ]
-    const turn = { history: conversation.messages.flatMap(contentOf), current: contentOf(userMessage) }
     conversation.messages.push(userMessage)
+    const turn = conversation.messages.slice()
     await this.save()
 
     let sendTail = Promise.resolve()

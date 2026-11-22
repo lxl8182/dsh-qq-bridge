@@ -6,6 +6,12 @@ import { imageStatusText } from '../onebot/message.js';
 import { replyParts } from '../message-format.js';
 import { sessionKeyOf } from './agent.js';
 import { NEW_SESSION_COMMAND } from './model-control.js';
+export function roleChatContent(message) {
+    return [
+        { type: 'text', text: JSON.stringify({ speaker: message.speaker, text: message.text }) + '\n' },
+        ...(message.attachments ?? []).map(attachment => ({ type: 'image', attachment })),
+    ];
+}
 export function roleSessionKeyOf(sessionKey, roleId) {
     return `${sessionKey}::qq-role::${roleId}`;
 }
@@ -135,12 +141,8 @@ export class RoleChatCoordinator {
             platformKey,
             ...(attachments.length ? { attachments } : {}),
         };
-        const contentOf = (message) => [
-            { type: 'text', text: JSON.stringify({ speaker: message.speaker, text: message.text }) + '\n' },
-            ...(message.attachments ?? []).map(attachment => ({ type: 'image', attachment })),
-        ];
-        const turn = { history: conversation.messages.flatMap(contentOf), current: contentOf(userMessage) };
         conversation.messages.push(userMessage);
+        const turn = conversation.messages.slice();
         await this.save();
         let sendTail = Promise.resolve();
         const results = await Promise.all(this.roles.map(async (role) => {

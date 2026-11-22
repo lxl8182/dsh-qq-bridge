@@ -8,7 +8,7 @@ import { AccessGate } from './security.js'
 import { AgentRpcHandler } from './handlers/agent.js'
 import { AgyChats } from './handlers/agy-chat.js'
 import { DshAgentExecutor, DshRenderedAgent, eventsForTurn, extractAssistantText, isUnexecutedDsmlToolCall, QQ_RESEARCH_SOURCE } from './handlers/dsh-executor.js'
-import { RoleChatCoordinator, roleConfigurationError, type RoleChatTurn } from './handlers/role-chat.js'
+import { RoleChatCoordinator, roleChatContent, roleConfigurationError, type RoleChatTurn } from './handlers/role-chat.js'
 import { installRoleOnlyPrompt, type ActiveRoleInput } from './handlers/role-context.js'
 import { DIR_COMMAND, resolveUserPath } from './handlers/directory.js'
 import {
@@ -771,7 +771,7 @@ function wireDsh(
       // 图片必须先经 attachments.saveImages() 取得持久引用,再以
       // { type: 'image', attachment } 进 content;直接塞 base64 会被 DSH 的
       // 内容校验拒绝。图片准入失败时退回纯文本,不让整轮失败。
-      const content = roleTurn ? [...roleTurn.history, ...roleTurn.current] : await buildDshUserContent(ctx, prompt, images)
+      const content = roleTurn ? roleChatContent(roleTurn[roleTurn.length - 1]!) : await buildDshUserContent(ctx, prompt, images)
       const msg = {
         id: randomUUID(),
         role: 'user',
@@ -781,7 +781,7 @@ function wireDsh(
       if (roleTurn) {
         const input = agent.roleInput
         if (!input) throw new Error('DSH 角色会话未安装隔离。')
-        input.current = { id: msg.id, historyLength: roleTurn.history.length }
+        input.current = { id: msg.id, transcript: roleTurn }
         try {
           agent.followup(msg)
           await agent.whenIdle()
