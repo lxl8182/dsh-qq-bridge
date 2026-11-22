@@ -110,7 +110,7 @@ describe('settings page actions', () => {
       .toContainEqual({ op: 'set', path: ['agent', 'friendMemoryEnabled'], value: true })
     expect(ops.map((op: any) => op.path.join('.'))).toEqual([
       'agent.provider', 'agent.model', 'agent.reasoningEffort', 'agent.cwd', 'agent.friendMemoryEnabled',
-      'agent.mode', 'agent.roles',
+      'agent.mode', 'agent.roles', 'agent.privateChatBackend', 'agent.agyModel', 'agent.agyReasoningEffort',
       'access.mode', 'access.groupAllowlist', 'permissionDefault', 'notifications.agentReply.enabled',
     ])
     expect(JSON.stringify(ops)).not.toContain('unsaved')

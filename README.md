@@ -368,6 +368,20 @@ agent:
 - `cwd`：QQ Agent 默认工作目录，默认是 `~`；`/dir <目录>` 会覆盖当前 QQ 会话的后续 session 目录。
 - `preset`：QQ 会话使用的 DSH agent preset。setup 会安装 `dsh-qq-bridge` 专用 preset；普通 Web 会话不选它就不会看到 QQ 回复风格 skill。
 
+#### Antigravity (agy) 私聊
+
+在 QQ Bridge 的 Provider 菜单选择 agy，再选择模型和思考强度。主人和获准的好友私聊使用各自的人格和历史，活跃聊天复用 ACP 会话。纯图片、图文混发和多图均可发送，图片随当轮进入 ACP，新建会话时回放文字历史。
+
+在 Linux 部署时，把下列环境变量提供给 DSH 服务，并用该账号完成 agy 登录。
+
+| 环境变量 | 用途 |
+|---|---|
+| `DSH_QQ_AGY_ROOT` | 安装目录，包含 `bin/agy`、`workspace` 和 `public-workspace`。两个工作区需要 `.agents/agents` 子目录。 |
+| `DSH_QQ_AGY_USER` | DSH 通过 `runuser` 启动 agy 时使用的专用账号。 |
+| `DSH_QQ_AGY_HOME` | 专用账号用于保存 agy 登录状态的 home。 |
+| `DSH_QQ_AGY_PERSONA_DIR` | 存放 `persona_versions.json` 和 `qq_public_persona.json` 的目录。 |
+| `DSH_QQ_AGY_PROXY` | 可选。传给 agy 子进程的 HTTP 和 HTTPS 代理地址。 |
+
 ### 更改确认消息和超时
 
 收到有效 QQ 指令后，插件会先回复 `agent.ackMessage`。设为空字符串 `""` 可以关闭确认消息：

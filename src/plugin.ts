@@ -6,6 +6,7 @@ import type { InboundImage } from './onebot/images.js'
 import { MessageRouter, OutboundSender } from './router.js'
 import { AccessGate } from './security.js'
 import { AgentRpcHandler } from './handlers/agent.js'
+import { AgyChats } from './handlers/agy-chat.js'
 import { DshAgentExecutor, DshRenderedAgent, eventsForTurn, extractAssistantText, isUnexecutedDsmlToolCall, QQ_RESEARCH_SOURCE } from './handlers/dsh-executor.js'
 import { RoleChatCoordinator, roleConfigurationError, type RoleChatTurn } from './handlers/role-chat.js'
 import { installRoleOnlyPrompt, type ActiveRoleInput } from './handlers/role-context.js'
@@ -380,7 +381,12 @@ async function startQqBridge(
     )
   }
 
+  const agy = cfg.agent.privateChatBackend === 'agy'
+    ? new AgyChats(cfg.agent.agyModel, cfg.agent.agyReasoningEffort)
+    : undefined
+  if (agy) console.info('[dsh-qq-bridge] private chat backend: agy / ' + cfg.agent.agyModel)
   const agentHandler = new AgentRpcHandler(executor, {
+    agy,
     friendMemoryEnabled,
     deliveryStatePath: join(stateDir, 'delivery.json'),
     restoreContext: input => {
@@ -410,13 +416,16 @@ async function startQqBridge(
     qqReplyStyleSkill: cfg.agent.qqReplyStyleSkill,
     webActivityGate: webActivity.gate,
     sessionIdOf: (sessionKey) => executor.currentSessionId(sessionKey),
-    ...(events ? { observeTurn: (report) => events.publish({
-      ...report,
-      // The executor knows the session id only after it has one; report what is
-      // true at publication time rather than the id it will have later.
-      ...(report.sessionId === undefined && executor.currentSessionId(report.sessionKey) !== undefined
-        ? { sessionId: executor.currentSessionId(report.sessionKey) } : {}),
-    }) } : {}),
+    ...(events ? { observeTurn: (report) => {
+      if (cfg.agent.privateChatBackend === 'agy' && report.scope === 'private' && !report.sessionId) return
+      events.publish({
+        ...report,
+        // The executor knows the session id only after it has one; report what is
+        // true at publication time rather than the id it will have later.
+        ...(report.sessionId === undefined && executor.currentSessionId(report.sessionKey) !== undefined
+          ? { sessionId: executor.currentSessionId(report.sessionKey) } : {}),
+      })
+    } } : {}),
     reservedCommands: [
       DIR_COMMAND,
       HELP_COMMAND,

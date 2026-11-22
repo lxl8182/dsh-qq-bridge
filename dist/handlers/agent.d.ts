@@ -4,6 +4,7 @@ import { AgentRunGate } from '../web-activity.js';
 import { type SavedInput } from '../delivery-store.js';
 import type { FriendMemoryStatus, QqTurnInput } from '../bridge-events.js';
 import { type InboundImage } from '../onebot/images.js';
+import type { AgyChats } from './agy-chat.js';
 /**
  * 历史配置字段 qqReplyStyleSkill 的默认 skill 名。
  *
@@ -161,6 +162,7 @@ export declare class AgentRpcHandler implements Handler {
         observeTurn?: AgentTurnObserver;
         prepareTurn?: (input: QqTurnInput) => Promise<void>;
         friendMemoryEnabled?: () => boolean;
+        agy?: Pick<AgyChats, 'run' | 'reset' | 'dispose'>;
         waitForOutput?: (sessionKey: string) => Promise<void>;
         deliveryStatePath?: string;
         restoreContext?: (input: SavedInput) => HandlerContext | undefined;
@@ -212,6 +214,9 @@ export declare class AgentRpcHandler implements Handler {
      */
     private collectImages;
     private runAgentTurn;
+    private usesAgy;
+    private agyHistory;
+    private completeTurn;
     private observeTurn;
     private turnReport;
     /**

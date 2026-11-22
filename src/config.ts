@@ -62,6 +62,9 @@ const DshQqBridgeConfig = z.object({
       mode: z.enum(['single', 'multi']).default('single'),
       roles: z.array(QqAgentRole).default([...DEFAULT_QQ_AGENT_ROLES]),
       friendMemoryEnabled: z.boolean().default(false),
+      privateChatBackend: z.enum(['dsh', 'agy']).default('dsh'),
+      agyModel: z.string().default('gemini-4-argon'),
+      agyReasoningEffort: z.string().default(''),
       /** DSH Web 的 agent preset;存在 agentPresets 服务时默认挂 QQ bridge 专用 preset。 */
       preset: z.string().optional().default('dsh-qq-bridge'),
       /** 驱动 agent 的 provider 路由(须有已注册适配器)。 */

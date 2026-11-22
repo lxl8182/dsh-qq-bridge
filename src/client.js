@@ -9,6 +9,20 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
     const NS = "dsh-qq-bridge";
     const NAPCAT_CHANNEL = "/dsh-qq-bridge-napcat";
+    // Model and effort IDs from the signed-in server account's ACP catalog.
+    const AGY_CATALOG = {
+      status: "ready", error: "",
+      groups: [{ id: "agy", models: [
+        {"id": "gemini-4-neon", "name": "Gemini 4 Neon", "reasoning": {"efforts": [{"id": "low"}, {"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}},
+        {"id": "gemini-4-argon", "name": "Gemini 4 Argon", "reasoning": {"efforts": [{"id": "low"}, {"id": "medium"}, {"id": "high"}]}},
+        {"id": "gemini-4-hydrogen", "name": "Gemini 4 Hydrogen", "reasoning": {"efforts": [{"id": "low"}, {"id": "medium"}, {"id": "high"}, {"id": "xhigh"}]}},
+        {"id": "gemini-pro-orchestrator-g1-pro", "name": "Orchestrator (Argon)", "reasoning": {"efforts": []}},
+        {"id": "gemini-3.8-flash", "name": "Gemini 3.8 Flash", "reasoning": {"efforts": [{"id": "low"}, {"id": "medium"}, {"id": "high"}]}},
+        {"id": "claude-opus-5-5", "name": "Claude Opus 5.5", "reasoning": {"efforts": [{"id": "low"}, {"id": "medium"}, {"id": "high"}]}},
+        {"id": "claude-sonnet-5-5", "name": "Claude Sonnet 5.5", "reasoning": {"efforts": [{"id": "low"}, {"id": "medium"}, {"id": "high"}]}},
+        {"id": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)", "reasoning": {"efforts": []}}
+      ] }],
+    };
     const ROLE_IDS = ["gpt", "claude", "ds", "gemini"];
 
     exports.inject = ["slots", "connection", "remote", "remote.session", "configForms"];
@@ -172,11 +186,18 @@ window.__ModuleLoader__.load({
       };
       const updateAgentProvider = (provider) => {
         setGeneralDirty(true);
-        setDraft((prev) => selectAgentProvider(prev, modelCatalog, provider));
+        setDraft((prev) => provider === "agy"
+          ? setPath(prev, ["agent", "privateChatBackend"], "agy")
+          : setPath(selectAgentProvider(prev, modelCatalog, provider), ["agent", "privateChatBackend"], "dsh"));
       };
       const updateAgentModel = (model) => {
         setGeneralDirty(true);
-        setDraft((prev) => selectAgentModel(prev, modelCatalog, prev.agent.provider, model));
+        setDraft((prev) => {
+          if (prev.agent.privateChatBackend !== "agy") return selectAgentModel(prev, modelCatalog, prev.agent.provider, model);
+          const choices = reasoningOptions(AGY_CATALOG, "agy", model, "");
+          const effort = choices.includes(prev.agent.agyReasoningEffort) ? prev.agent.agyReasoningEffort : "";
+          return { ...prev, agent: { ...prev.agent, agyModel: model, agyReasoningEffort: effort } };
+        });
       };
       const updateRole = (index, patch) => {
         setGeneralDirty(true);
@@ -302,6 +323,12 @@ window.__ModuleLoader__.load({
       }, [generalKey, generalDirty, snapshot.status, snapshot.writable, pendingAction]);
 
       const disabled = snapshot.status !== "ready" || !snapshot.writable || pendingAction !== "";
+      const agySelected = draft.agent.privateChatBackend === "agy";
+      const activeCatalog = agySelected ? AGY_CATALOG : modelCatalog;
+      const activeProvider = agySelected ? "agy" : draft.agent.provider;
+      const activeModel = agySelected ? draft.agent.agyModel : draft.agent.model;
+      const effortField = agySelected ? "agyReasoningEffort" : "reasoningEffort";
+      const modelLabels = Object.fromEntries(modelsForProvider(activeCatalog, activeProvider).map(entry => [entry.id, entry.name ?? entry.id]));
       const startNapcatDisabled = disabled || draft.platform !== "napcat";
       return h("div", { style: styles.page },
         h("div", { style: styles.header },
@@ -323,10 +350,10 @@ window.__ModuleLoader__.load({
             ...draft.agent.roles.map((role, index) => h(RoleFields, { key: role.id, role, index, modelCatalog, disabled,
               update: patch => updateRole(index, patch) })),
           ) : h("div", { style: styles.stack }, h("div", { style: styles.grid },
-            selectField("Provider", draft.agent.provider, providerOptions(modelCatalog, draft.agent.provider), disabled || modelCatalog.status !== "ready", updateAgentProvider),
-            selectField("Model", draft.agent.model, modelOptionsForProvider(modelCatalog, draft.agent.provider, draft.agent.model), disabled || modelCatalog.status !== "ready", updateAgentModel),
-            selectField("思考强度", draft.agent.reasoningEffort, reasoningOptions(modelCatalog, draft.agent.provider, draft.agent.model, draft.agent.reasoningEffort), disabled || modelCatalog.status !== "ready", (value) => update(["agent", "reasoningEffort"], value), { "": "模型默认" }),
-            textField("默认工作目录", draft.agent.cwd, disabled, (value) => update(["agent", "cwd"], value)),
+            selectField("Provider", activeProvider, [...providerOptions(modelCatalog, draft.agent.provider), "agy"], disabled, updateAgentProvider),
+            selectField("Model", activeModel, modelOptionsForProvider(activeCatalog, activeProvider, activeModel), disabled || activeCatalog.status !== "ready", updateAgentModel, agySelected ? modelLabels : {}),
+            selectField("思考强度", draft.agent[effortField], reasoningOptions(activeCatalog, activeProvider, activeModel, draft.agent[effortField]), disabled || activeCatalog.status !== "ready", (value) => update(["agent", effortField], value), { "": "模型默认" }),
+            agySelected ? null : textField("默认工作目录", draft.agent.cwd, disabled, (value) => update(["agent", "cwd"], value)),
             readonlyField("超时", "不限制"),
           ),
           h("p", { style: styles.subtle }, "日常聊天建议 medium；复杂问题可用 high。可选档位由当前模型提供，模型默认沿用提供方设置。"),
@@ -341,7 +368,8 @@ window.__ModuleLoader__.load({
               userId + " · " + ({ enabled: "已启用", off: "已关闭", ungranted: "未授权", paused: "RIN 已暂停",
                 unavailable: "RIN 暂不可用" }[state] ?? state) + " · " + new Date(checkedAt).toLocaleString())))
             : h("p", { style: styles.subtle }, "当前进程还没有好友判定记录。")),
-          modelCatalog.error ? h("p", { role: "alert", style: styles.error }, "模型目录加载失败：" + modelCatalog.error) : null,
+          (draft.agent.mode === "single" ? activeCatalog : modelCatalog).error
+            ? h("p", { role: "alert", style: styles.error }, "模型目录加载失败：" + (draft.agent.mode === "single" ? activeCatalog : modelCatalog).error) : null,
           h("h4", { style: styles.sectionTitle }, "安全与权限"),
           h("div", { style: styles.grid },
             selectField("访问模式", draft.access.mode, ["whitelist", "open"], disabled, (value) => update(["access", "mode"], value)),
@@ -870,6 +898,9 @@ window.__ModuleLoader__.load({
           })),
           preset: source.agent?.preset ?? "dsh-qq-bridge",
           friendMemoryEnabled: source.agent?.friendMemoryEnabled === true,
+          privateChatBackend: source.agent?.privateChatBackend === "agy" ? "agy" : "dsh",
+          agyModel: source.agent?.agyModel ?? "gemini-4-argon",
+          agyReasoningEffort: source.agent?.agyReasoningEffort ?? "",
           provider: source.agent?.provider ?? "deepseek-official",
           model: source.agent?.model ?? "deepseek-v4-flash",
           reasoningEffort: source.agent?.reasoningEffort ?? "",
@@ -905,7 +936,7 @@ window.__ModuleLoader__.load({
 
     function generalOpsFromDraft(draft) {
       return [
-        ...["provider", "model", "reasoningEffort", "cwd", "friendMemoryEnabled", "mode", "roles"].map((key) => set(["agent", key], draft.agent[key])),
+        ...["provider", "model", "reasoningEffort", "cwd", "friendMemoryEnabled", "mode", "roles", "privateChatBackend", "agyModel", "agyReasoningEffort"].map((key) => set(["agent", key], draft.agent[key])),
         set(["access", "mode"], draft.access.mode),
         ...(draft.platform === "napcat" ? [set(["access", "allowlist"], splitLines(draft.access.allowlistText).map(Number))] : []),
         set(["access", "groupAllowlist"], splitLines(draft.access.groupAllowlistText)
@@ -947,6 +978,9 @@ window.__ModuleLoader__.load({
           mode: draft.agent.mode,
           roles: draft.agent.roles,
           friendMemoryEnabled: draft.agent.friendMemoryEnabled,
+          privateChatBackend: draft.agent.privateChatBackend,
+          agyModel: draft.agent.agyModel,
+          agyReasoningEffort: draft.agent.agyReasoningEffort,
           preset: draft.agent.preset,
           provider: draft.agent.provider,
           model: draft.agent.model,

@@ -114,17 +114,20 @@ declare const DshQqBridgeConfig: z.ZodObject<{
             reasoningEffort: string;
             model: string;
             id: string;
-            provider: string;
             persona: string;
+            provider: string;
         }, {
             name?: string | undefined;
             reasoningEffort?: string | undefined;
             model?: string | undefined;
             id?: string | undefined;
-            provider?: string | undefined;
             persona?: string | undefined;
+            provider?: string | undefined;
         }>, "many">>;
         friendMemoryEnabled: z.ZodDefault<z.ZodBoolean>;
+        privateChatBackend: z.ZodDefault<z.ZodEnum<["dsh", "agy"]>>;
+        agyModel: z.ZodDefault<z.ZodString>;
+        agyReasoningEffort: z.ZodDefault<z.ZodString>;
         /** DSH Web 的 agent preset;存在 agentPresets 服务时默认挂 QQ bridge 专用 preset。 */
         preset: z.ZodDefault<z.ZodOptional<z.ZodString>>;
         /** 驱动 agent 的 provider 路由(须有已注册适配器)。 */
@@ -172,6 +175,7 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         model: string;
         preset: string;
         mode: "single" | "multi";
+        cwd: string;
         friendMemoryEnabled: boolean;
         provider: string;
         roles: {
@@ -179,11 +183,13 @@ declare const DshQqBridgeConfig: z.ZodObject<{
             reasoningEffort: string;
             model: string;
             id: string;
-            provider: string;
             persona: string;
+            provider: string;
         }[];
+        privateChatBackend: "agy" | "dsh";
+        agyModel: string;
+        agyReasoningEffort: string;
         models: string[];
-        cwd: string;
         maxMessageLength: number;
         ackMessage: string;
         timeoutMessage: string;
@@ -198,6 +204,7 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         model?: string | undefined;
         preset?: string | undefined;
         mode?: "single" | "multi" | undefined;
+        cwd?: string | undefined;
         friendMemoryEnabled?: boolean | undefined;
         provider?: string | undefined;
         roles?: {
@@ -205,11 +212,13 @@ declare const DshQqBridgeConfig: z.ZodObject<{
             reasoningEffort?: string | undefined;
             model?: string | undefined;
             id?: string | undefined;
-            provider?: string | undefined;
             persona?: string | undefined;
+            provider?: string | undefined;
         }[] | undefined;
+        privateChatBackend?: "agy" | "dsh" | undefined;
+        agyModel?: string | undefined;
+        agyReasoningEffort?: string | undefined;
         models?: string[] | undefined;
-        cwd?: string | undefined;
         maxMessageLength?: number | undefined;
         ackMessage?: string | undefined;
         timeoutMs?: number | undefined;
@@ -276,6 +285,7 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         model: string;
         preset: string;
         mode: "single" | "multi";
+        cwd: string;
         friendMemoryEnabled: boolean;
         provider: string;
         roles: {
@@ -283,11 +293,13 @@ declare const DshQqBridgeConfig: z.ZodObject<{
             reasoningEffort: string;
             model: string;
             id: string;
-            provider: string;
             persona: string;
+            provider: string;
         }[];
+        privateChatBackend: "agy" | "dsh";
+        agyModel: string;
+        agyReasoningEffort: string;
         models: string[];
-        cwd: string;
         maxMessageLength: number;
         ackMessage: string;
         timeoutMessage: string;
@@ -341,6 +353,7 @@ declare const DshQqBridgeConfig: z.ZodObject<{
         model?: string | undefined;
         preset?: string | undefined;
         mode?: "single" | "multi" | undefined;
+        cwd?: string | undefined;
         friendMemoryEnabled?: boolean | undefined;
         provider?: string | undefined;
         roles?: {
@@ -348,11 +361,13 @@ declare const DshQqBridgeConfig: z.ZodObject<{
             reasoningEffort?: string | undefined;
             model?: string | undefined;
             id?: string | undefined;
-            provider?: string | undefined;
             persona?: string | undefined;
+            provider?: string | undefined;
         }[] | undefined;
+        privateChatBackend?: "agy" | "dsh" | undefined;
+        agyModel?: string | undefined;
+        agyReasoningEffort?: string | undefined;
         models?: string[] | undefined;
-        cwd?: string | undefined;
         maxMessageLength?: number | undefined;
         ackMessage?: string | undefined;
         timeoutMs?: number | undefined;

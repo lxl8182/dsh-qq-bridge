@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { MessageRouter } from './router.js';
 import { AccessGate } from './security.js';
 import { AgentRpcHandler } from './handlers/agent.js';
+import { AgyChats } from './handlers/agy-chat.js';
 import { DshAgentExecutor, eventsForTurn, extractAssistantText, isUnexecutedDsmlToolCall, QQ_RESEARCH_SOURCE } from './handlers/dsh-executor.js';
 import { RoleChatCoordinator, roleConfigurationError } from './handlers/role-chat.js';
 import { installRoleOnlyPrompt } from './handlers/role-context.js';
@@ -222,7 +223,13 @@ async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
     if (cfg.shell.enabled) {
         unregisterShell = router.register(new ShellHandler(async (cmd) => ({ stdout: `(shell exec disabled) ${cmd}`, code: 1 })));
     }
+    const agy = cfg.agent.privateChatBackend === 'agy'
+        ? new AgyChats(cfg.agent.agyModel, cfg.agent.agyReasoningEffort)
+        : undefined;
+    if (agy)
+        console.info('[dsh-qq-bridge] private chat backend: agy / ' + cfg.agent.agyModel);
     const agentHandler = new AgentRpcHandler(executor, {
+        agy,
         friendMemoryEnabled,
         deliveryStatePath: join(stateDir, 'delivery.json'),
         restoreContext: input => {
@@ -254,13 +261,17 @@ async function startQqBridge(ctx, cfg, events, friendMemoryEnabled) {
         qqReplyStyleSkill: cfg.agent.qqReplyStyleSkill,
         webActivityGate: webActivity.gate,
         sessionIdOf: (sessionKey) => executor.currentSessionId(sessionKey),
-        ...(events ? { observeTurn: (report) => events.publish({
-                ...report,
-                // The executor knows the session id only after it has one; report what is
-                // true at publication time rather than the id it will have later.
-                ...(report.sessionId === undefined && executor.currentSessionId(report.sessionKey) !== undefined
-                    ? { sessionId: executor.currentSessionId(report.sessionKey) } : {}),
-            }) } : {}),
+        ...(events ? { observeTurn: (report) => {
+                if (cfg.agent.privateChatBackend === 'agy' && report.scope === 'private' && !report.sessionId)
+                    return;
+                events.publish({
+                    ...report,
+                    // The executor knows the session id only after it has one; report what is
+                    // true at publication time rather than the id it will have later.
+                    ...(report.sessionId === undefined && executor.currentSessionId(report.sessionKey) !== undefined
+                        ? { sessionId: executor.currentSessionId(report.sessionKey) } : {}),
+                });
+            } } : {}),
         reservedCommands: [
             DIR_COMMAND,
             HELP_COMMAND,

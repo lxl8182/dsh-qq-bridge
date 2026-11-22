@@ -9,6 +9,7 @@ import type { FriendMemoryStatus, QqTurnInput } from '../bridge-events.js'
 import { collectInboundImages, type InboundImage } from '../onebot/images.js'
 import { imageStatusText } from '../onebot/message.js'
 import { replyParts } from '../message-format.js'
+import type { AgyChats, ChatLine } from './agy-chat.js'
 
 /**
  * 历史配置字段 qqReplyStyleSkill 的默认 skill 名。
@@ -179,6 +180,7 @@ export class AgentRpcHandler implements Handler {
       observeTurn?: AgentTurnObserver
       prepareTurn?: (input: QqTurnInput) => Promise<void>
       friendMemoryEnabled?: () => boolean
+      agy?: Pick<AgyChats, 'run' | 'reset' | 'dispose'>
       waitForOutput?: (sessionKey: string) => Promise<void>
       deliveryStatePath?: string
       restoreContext?: (input: SavedInput) => HandlerContext | undefined
@@ -190,6 +192,7 @@ export class AgentRpcHandler implements Handler {
   async open(): Promise<void> { await this.delivery.open() }
   async dispose(): Promise<void> {
     this.stopped = true
+    this.opts.agy?.dispose()
     for (const delay of this.delays.values()) delay.abort()
     await this.delivery.save()
   }
@@ -244,6 +247,7 @@ export class AgentRpcHandler implements Handler {
         turn.state = 'complete'
       }
       await this.delivery.save()
+      this.opts.agy?.reset(sessionKey)
       await this.executor.startNewSession!(sessionKey)
     })
   }
@@ -251,6 +255,7 @@ export class AgentRpcHandler implements Handler {
   async retireSession(sessionId: string): Promise<void> {
     for (const turn of Object.values(this.delivery.turns)) {
       if (turn.sessionId !== sessionId && turn.report?.sessionId !== sessionId) continue
+      this.opts.agy?.reset(sessionKeyOf(turn.input))
       if (turn.state === 'waiting') {
         delete turn.sessionId
         turn.parts = []
@@ -286,7 +291,7 @@ export class AgentRpcHandler implements Handler {
         else if (turn.state === 'output') {
           this.active.set(ctx, turn)
           try { await this.sendPending(ctx, turn.parts); await this.finishDelivery(turn) }
-          finally { this.active.delete(ctx) }
+          finally { this.opts.agy?.reset(sessionKeyOf(ctx)); this.active.delete(ctx) }
         }
       })
     }
@@ -495,11 +500,27 @@ export class AgentRpcHandler implements Handler {
   private async runAgentTurn(ctx: HandlerContext, sessionKey: string, payload: string): Promise<void> {
     // 图片在这里才下载:确认本轮真要交给 Agent 之后,而不是在路由分流时。
     // 失败只记录,不改变文本轮次的任何行为。
+    const agy = this.usesAgy(ctx) ? this.opts.agy : undefined
     let images = await this.collectImages(ctx)
     const ackMessage = this.opts.ackMessage ?? '收到，正在处理...'
     const timeoutMs = this.opts.timeoutMs
     const timeoutMessage = this.opts.timeoutMessage ?? 'agent 无响应，请稍后重试。'
     try {
+      if (agy) {
+        ctx.payload = imageStatusText(payload, ctx.images ?? [], images)
+        payload = ctx.payload
+        const stored = this.active.get(ctx)
+        if (stored) {
+          stored.state = 'running'
+          stored.input.payload = payload
+          await this.delivery.save()
+        }
+        if (ackMessage) await this.respondChunk(ctx, ackMessage)
+        const result = await agy.run(sessionKey, () => this.agyHistory(sessionKey), payload, ctx.owner, timeoutMs, images)
+        const delivered = await this.completeTurn(ctx, sessionKey, payload, result, stored, true)
+        if (!delivered) agy.reset(sessionKey)
+        return
+      }
       images = this.executor.prepareImages ? await this.executor.prepareImages(images) : images
       ctx.payload = imageStatusText(ctx.payload, ctx.images ?? [], images)
       payload = ctx.payload
@@ -531,21 +552,11 @@ export class AgentRpcHandler implements Handler {
           if (attempt === 0 && error instanceof QqSessionArchivedError) continue
           throw error
         }
-        if (this.stopped || stored?.retired) return
-        if (stored) {
-          stored.state = 'output'
-          const visible = parseQqSpells(result || '').visibleText
-          stored.report = this.turnReport(ctx, sessionKey,
-            replyParts(this.opts.controlDispatcher ? parseQqControlBlocks(visible).visibleText : visible).text,
-            [], { status: 'completed', generationStatus: 'completed' })
-          await this.delivery.save()
-        }
-        const output = await this.respondAgentOutput(ctx, sessionKey, result || '(no output)')
-        if (stored) await this.finishDelivery(stored)
-        else this.observeTurn(ctx, sessionKey, payload, output.reply, output.parts, { status: output.status, generationStatus: 'completed' })
+        await this.completeTurn(ctx, sessionKey, payload, result, stored)
         return
       }
     } catch (err) {
+      agy?.reset(sessionKey)
       const stored = this.active.get(ctx)
       if (this.stopped || stored?.retired) return
       if (stored) {
@@ -567,6 +578,40 @@ export class AgentRpcHandler implements Handler {
     }
   }
 
+  private usesAgy(ctx: Pick<HandlerContext, 'scope'>): boolean {
+    return Boolean(this.opts.agy) && ctx.scope === 'private'
+  }
+
+  private agyHistory(sessionKey: string): ChatLine[] {
+    return Object.values(this.delivery.turns).flatMap(turn => {
+      const report = turn.report
+      if (turn.retired || !report?.input || report.sessionKey !== sessionKey) return []
+      const reply = turn.parts.filter(part => part.kind === 'reply' && part.state === 'sent')
+        .map(part => part.text).join('')
+      if (!reply.trim()) return []
+      return [{ role: 'user', content: report.input }, { role: 'assistant', content: reply }]
+    })
+  }
+
+  private async completeTurn(
+    ctx: HandlerContext, sessionKey: string, payload: string, result: string,
+    stored: DeliveryTurn | undefined, plainText = false,
+  ): Promise<boolean> {
+    if (this.stopped || stored?.retired) return false
+    if (stored) {
+      stored.state = 'output'
+      const visible = parseQqSpells(result || '').visibleText
+      stored.report = this.turnReport(ctx, sessionKey,
+        replyParts(plainText || this.opts.controlDispatcher ? parseQqControlBlocks(visible).visibleText : visible).text,
+        [], { status: 'completed', generationStatus: 'completed' })
+      await this.delivery.save()
+    }
+    const output = await this.respondAgentOutput(ctx, sessionKey, result || '(no output)', { plainText })
+    if (stored) await this.finishDelivery(stored)
+    else this.observeTurn(ctx, sessionKey, payload, output.reply, output.parts, { status: output.status, generationStatus: 'completed' })
+    return output.status === 'completed' && output.parts.length > 0 && output.reply === result
+  }
+
   private observeTurn(
     ctx: HandlerContext,
     sessionKey: string,
@@ -585,8 +630,8 @@ export class AgentRpcHandler implements Handler {
 
   private turnReport(ctx: HandlerContext, sessionKey: string, reply: string, parts: QqTurnReport['parts'],
     outcome: Pick<QqTurnReport, 'status' | 'generationStatus' | 'reason'>): QqTurnReport {
-      const sessionId = this.opts.sessionIdOf?.(sessionKey)
-      const turnMessageId = this.executor.lastTurnIdentity?.(sessionKey)?.messageId
+      const sessionId = this.usesAgy(ctx) ? undefined : this.opts.sessionIdOf?.(sessionKey)
+      const turnMessageId = this.usesAgy(ctx) ? undefined : this.executor.lastTurnIdentity?.(sessionKey)?.messageId
       return {
         sessionKey,
         ...(sessionId === undefined ? {} : { sessionId }),
@@ -617,13 +662,13 @@ export class AgentRpcHandler implements Handler {
     ctx: HandlerContext,
     sessionKey: string,
     result: string,
-    options: { report?: HandlerContext; remember?: boolean; offset?: number } = {},
+    options: { report?: HandlerContext; remember?: boolean; offset?: number; plainText?: boolean } = {},
   ): Promise<{
     reply: string
     parts: QqTurnReport['parts']
     status: 'completed' | 'failed'
   }> {
-    const dispatcher = ctx.owner && ctx.scope === 'private' ? this.opts.controlDispatcher : undefined
+    const dispatcher = !options.plainText && ctx.owner && ctx.scope === 'private' ? this.opts.controlDispatcher : undefined
     // 咒语先拆:标签属于「模型还没说完」的部分,不能出现在主人看到的正文里。
     // 拆完仍是纯文本,所以下面有没有控制块分发器都能走同一条路。
     const spelled = parseQqSpells(result)
