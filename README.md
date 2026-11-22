@@ -1,764 +1,202 @@
-# dsh-qq-bridge · QQ Remote Control for DSH
-
-本批适配版 `1.0.6-neko.14` 面向 DSH `0.2.1-rc.3`，使用 volatile Config、configForms 和原生 preset 声明。本机桌面与服务器 Web 通过各自 profile 安装。
-
-QQ 入站按结构化消息段提取正文和图片，原始图片 CQ 码与下载地址不进入 DSH/记忆正文；附件准入在记忆准备前完成，单张图片失败会留下对应的未读取状态。纯文字中的 CQ 代码示例保留。
-
-好友与群聊使用 QQ 公共预设。设置页的“允许私聊的好友 QQ”和“允许聊天的群”对应 `access.allowlist`、`access.groupAllowlist`，官方机器人好友使用 `official.allowlistOpenIds`。白名单群内成员 @机器人可交互，各好友用独立会话，同群共享会话并保留成员署名。默认沿用 DSH 原生历史，重启后通过 `resume` 恢复。好友私聊可用 `查资料`。好友记忆获授权且开启后，共用私聊记忆和换段流程，并按该好友主体提供 `翻本子` 与低频话题跟进。
-
-单 Agent 模式下，好友可私聊发送 `/new-session` 重开对话，当前回复发完后生效。旧记录保留，重开从空上下文开始。换模型沿用当前聊天。网页归档当前会话后，下一条 QQ 消息会自动开新会话，已归档的原话仍可查看。
-
-回复完成后，普通聊天按自然换行形成独立气泡，代码、列表和引用保持整体；每条间隔约 0.8—2 秒。普通回复、主动搭话和咒语后续都完整发完本轮气泡，新消息在同会话队列等待；正在生成的主动轮次同样先完成再接新输入。平台失败停止后续发送，恢复只继续已知未发送片段。持久分段按 Unicode 码点计数，同一轮的完整可见 assistant 消息按 ID 去重并顺序投递；推理和后台过程不转发。设置页已移除逐增量回发开关。
-
-配套版本 `dsh-rin-memory 0.3.2` 提供好友/群聊的纯聊天隔离，并通过 `qqBridgeEvents.assistantText/planOutput` 复用可见消息与气泡边界；主动完成提交使用核心 `rin-memory 0.1.0.dev11` 的 `part_sizes`。持久正文与回执保留原始分段和 Unicode 码点数；QQ 发送时移除各片段首尾空白行，保留片段内部换行、代码和缩进，避免气泡底部出现空行。
-
-本批由 `dsh-rin-memory` 持有统一候选与模型联系计划；bridge负责合法身份、分段端口和唯一持久投递。上下文达到128K软预算后，在本轮气泡发完才切换内部DSH段，QQ聊天与长期记忆连续。服务器仍需在本机验收后手动安装固定提交的新版本包。
-
-轮次定位和咒语反馈读取 rc.3 的 `session.snapshotEvents()` 完整日志，查询回退使用 `sessionQuery.readSession()`；模型 surface 不包含 turn 边界，不能用于确认输入是否提交。准入在输入提交前失败时，回报本次的真实失败原因。
-
-`qqBridgeEvents.deliverByIndex({ sessionKey, sessionId, outputId, parts }, canSend)` 供 `dsh-rin-memory` 主动输出复用同一投递队列；原 `deliverOutput` 接口继续可用。稳定 output ID 与原分段索引跨重启保留，已发送段不重复发送；每个待发送段先调用 `canSend` 复查，外部管理的正文由消费插件负责重试。`companion-proactive` 来源由该消费者完成保存与回执，通用自发轮转发器跳过这一来源。插件通过 `bindingRecords/restoreBindings/ensureSessions` 保存并恢复桥接校验过的主人绑定，重启后无需先发一条 QQ 消息。
-
-设置页「通用配置 → 好友记忆与续聊压缩」默认关闭。切换会在下一轮私聊生效，已授权好友才接入记忆。关闭、撤销授权或暂停记忆后，之前采用过记忆的会话换到纯聊天的新段。设置页会显示当前进程中最近一次好友来信时的判定和时间。
-
-QQ 会话按 `agent.cwd` 归入对应工作区；工作区服务尚未就绪时暂存归属请求，服务就绪后补交，避免启动恢复的 QQ 会话留在“未分组”。
-
-咒语执行归 `dsh-rin-memory`。插件监听 assistant 消息，通过标准 agent 执行并用 followup 回填，网页 QQ 预设脱离 bridge 也能运行。Bridge 在出站时剥离独立一行的闭合中文咒语标签，引用、代码块和未闭合标签按正文显示。保存和重试使用剥离后的可见文字，标准咒语 worker 不触发普通工作会话回复提醒。
-
-`<下次联系>…</下次联系>` 与 `<选题>…</选题>` 是记忆插件处理的私有元数据。bridge 在普通咒语解析前剥离这些记号，未闭合的元数据尾段也不外发；仅剩 `[PASS]` 时不形成 QQ 气泡。普通回复、主动输出和咒语后续保存与发送同一份可见正文，这些记号不会变成咒语或终端反馈。
-
-已绑定 QQ 来源的会话中，咒语反馈等自发轮次完成后也会发回原聊天。入站回复按投递消息 ID 定位所属轮次，自发轮次按会话 ID 与轮次去重，复用 `delivery.json` 分段发送和重试；反馈正文不作为新的用户发言提交个人记忆。普通网页会话与咒语 worker 的正文不会进入这条出站通道。
-
-QQ 私聊中，`查资料` 和 `翻本子` 在一次入站回复内处理。记忆插件拿到资料后，Bridge 只回填一次并等待同一主会话给出正式回复，再沿用原入站消息键投递和记账。回复里的资料编号可以补上本次查询对应的来源链接。
-
-与 `dsh-rin-memory` 配合时，生成前通过 `qqBridgeEvents` 核对身份和记忆就绪状态，生成后报告真实输入与最终可见文字。私聊换段策略在上一轮气泡发完后收到本轮文字、实际入站图片数量和主人标记，记忆插件据此为主人及启用记忆的好友安排换段。QQ 来源键沿用原值。普通回复的成功分段另带实际送达文字，供记忆插件续聊。
-
-`delivery.json` 按账号命名空间持久保存待处理输入和分段发送状态；记忆不可用时保留输入，生成后只补发已知失败分段。崩溃时在途生成、未确认发送保留 `unknown`，不自动重复工具或消息。记忆清理会停止旧会话、清除对应队列正文并让后续输入使用新会话，保留消息 ID 以拦截旧消息重投。
-
-Host Config 使用 `@deepseek-ai/schemastery@3.18.5` 的真实 volatile 引用。普通 `schemastery` 配合手工设置 `meta.volatile` 只会让页面显示可编辑，却不能让已运行的桥接读到更新。更新本地链接包后完全退出并重新打开桌面版，再验证连接和收发。
-
-QQ 预设的 `tool-fs-search` 显式提供 `sampleOverCapGlobResults: false`。该预设在 Windows 启用的 persona、文件工具、文件搜索和 PowerShell 工具配置，均使用桌面版冻结运行时的实际 Schema 校验。
-
-官方机器人首次配置时，`Admin OpenID` 填主人在该机器人下的用户标识，`Allowlist OpenIDs` 填额外允许访问的用户标识，单人使用可留空。取得管理员标识可在本目录运行 `npm run pair:official`：输入 AppID、隐藏输入 AppSecret，并按终端显示的随机配对口令从 QQ 私聊机器人；成功后复制输出的 Admin OpenID 回设置页。此命令只做配对，不修改任何 DSH profile，也不启用开放访问。
+# dsh-qq-bridge · QQ Bridge for DeepSeek Harness
 
 <p align="center">
-  <img src="https://img.shields.io/badge/DSH-plugin-blue?style=flat-square" alt="DSH Plugin">
-  &nbsp;
+  <img src="https://img.shields.io/badge/DSH-0.2.1--rc.3-2563eb?style=flat-square" alt="DSH 0.2.1-rc.3">
   <img src="https://img.shields.io/badge/QQ-NapCat%20%2F%20OneBot-12b7f5?style=flat-square" alt="NapCat OneBot">
-  &nbsp;
   <img src="https://img.shields.io/badge/QQ%20Bot-Official-00a870?style=flat-square" alt="QQ Official Bot">
-  &nbsp;
-  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/Node.js-20%2B-339933?style=flat-square" alt="Node.js 20+">
+  <img src="https://img.shields.io/badge/License-MIT-555?style=flat-square" alt="MIT License">
 </p>
 
+**把 DeepSeek Harness（DSH）与 AI 陪伴会话接到 QQ：手机上随时聊、派活、看提醒，无需开放公网端口。**
 
-<div align="center">
+本仓库是 [TomoyoNatsume/dsh-qq-bridge](https://github.com/TomoyoNatsume/dsh-qq-bridge) 的个人深度适配版（包名 `@yachangchang/dsh-qq-bridge`，面向 DSH `0.2.1-rc.3`），在保留上游 QQ 遥控与双协议接入的基础上，重点增强了**持久分气泡投递、好友与群聊隔离、铃芽 RIN 记忆联动、四角色并行聊天、以及 Antigravity (`agy`) 私聊接入**。
 
-[更新](#更新) · [是什么](#是什么) · [功能](#功能) · [快速开始](#快速开始) · [配置](#配置) · [安全](#安全) · [停止服务](#停止服务) · [常见问题](#常见问题) · [上游与原仓库](#上游与原仓库) · [许可与致谢](#许可与致谢)
+---
 
-</div>
-
-<div align="center">
-
-<h2><span style="color:#16a34a;">想随时随地操控鲸鱼娘帮你干活？</span></h2>
-<h2><span style="color:#2563eb;">把任务丢给鲸鱼娘就转头刷手机忘记盯进度？</span></h2>
-
-<strong>把 DSH 绑定到 QQ：出门在外也能发任务，Web 对话完成后立刻提醒刷手机的你。</strong>
-<strong>无需开放外部端口，无需配置公网地址~ 零安全风险~</strong>
-
-<br>
-
-<sub>QQ 远程控制 · Agent 回复提醒 · NapCat / 官方 QQ Bot 双路径</sub>
-
-</div>
-
-## 更新
-
-> **v1.0.0 更新：支持Web UI中配置，告别繁琐的CLI配置**
->
-> 直接在 QQ 里对 Agent 说“请在 2026 年 9 月 1 号中午 12 点提醒我提交报告”，插件会创建一次性定时任务，到点后在同一个 QQ 会话触发 Agent 并主动发回提醒。
-
-
-> **v0.4.0 更新：支持定时提示功能!**
->
-> 直接在 QQ 里对 Agent 说“请在 2026 年 9 月 1 号中午 12 点提醒我提交报告”，插件会创建一次性定时任务，到点后在同一个 QQ 会话触发 Agent 并主动发回提醒。
-
-## 是什么
-
-- 控制鲸鱼娘：
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/TomoyoNatsume/dsh-qq-bridge/main/docs/asset/test0.jpg" alt="控制鲸鱼娘" width="760">
-</p>
-
-- web 会话完成提醒：
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/TomoyoNatsume/dsh-qq-bridge/main/docs/asset/AgentReply.jpg" alt="会话完成提醒" width="760">
-</p>
-
-dsh-qq-bridge 是一个 DeepSeek Harness（DSH）Web profile 插件，用来把 QQ 消息转成 DSH Agent 会话请求，再把 Agent 回复发回 QQ。最常用的链路是：
+## 架构一览
 
 ```text
-QQ 发送消息 -> NapCat / OneBot -> dsh-qq-bridge -> DSH Agent -> QQ 回复
+手机 QQ ──► NapCat (OneBot WS) 或 腾讯官方 QQ Bot
+                │
+                ▼
+         dsh-qq-bridge（白名单鉴权 · 图文准入 · 会话串行化 · 持久分气泡投递）
+                │
+      ┌─────────┼───────────────────────┐
+      ▼         ▼                       ▼
+  单 Agent    四角色并行聊天         Antigravity (agy) 私聊
+(+ dsh-rin-memory) (4×独立会话)     (ACP 会话复用 + 图片直传)
 ```
 
-默认推荐走 **NapCat / OneBot**：用一个 QQ 号登录 NapCat，然后从手机 QQ 给自己发消息，不需要额外准备机器人小号。也支持双号模式：一个 QQ 登录 NapCat，另一个 QQ 负责发指令。
+## 本版核心能力
 
-如果不想使用 NapCat，也可以选择 **腾讯官方 QQ 开放平台机器人**。官方模式不需要扫码登录 NapCat，但需要在 QQ 开放平台创建机器人，并提供 AppID、AppSecret，再通过一次性 `pair <code>` 配对写入管理员 openid。
+- **双协议 QQ 接入**：同时支持 **NapCat / OneBot**（个人单号/双号，限制少）与 **腾讯官方 QQ Bot**（开放平台，扫码零烦恼，支持 `npm run pair:official` 一次配对）。
+- **三种聊天模式**：
+  - **单 Agent 模式**（默认）：支持主人私聊、白名单好友独立私聊、白名单群 `@机器人` 群聊（同群共享会话并保留成员署名）。
+  - **四角色模式**：同一条消息并行派给 4 个独立人设与模型的 DSH 会话，按完成顺序以 `<角色名>: ...` 发回，并按条增量同步共同聊天历史。
+  - **Antigravity (`agy`) 私聊**：Provider 选 `agy` 后直连本地 ACP 会话，主人与获准好友各自持有独立人格与历史，支持纯图、图文混发与多图透传。
+- **自然分气泡 + 崩溃不重发**：回复按自然换行拆成独立气泡，代码块、列表与引用保持整体，发送时剥去首尾空行，每条间隔约 0.8–2 秒。分段与进度按账号命名空间持久落盘至 `delivery.json`（Unicode 码点计数 + 稳定 `outputId`），崩溃或断线只续投已知未发片段，绝不重发已发消息。
+- **与 [dsh-rin-memory](https://github.com/lxl8182/dsh-rin-memory) 无缝联动**：
+  - 核对主人与授权好友身份及记忆就绪状态，回报真实图文输入与实际送达气泡正文，支撑无感上下文换段与跨段续聊。
+  - 在设置页提供「好友记忆与续聊压缩」实时开关；关闭、撤销授权或暂停记忆时，已接入记忆的好友会话自动切回纯聊天新段。
+  - 出站自动剥离私有元数据（`<下次联系>`、`<选题>`）与独立一行的闭合中文咒语标签，支持 `查资料` / `翻本子` 单次回填并补全来源链接；通过 `qqBridgeEvents.deliverByIndex` 复用同一队列投递主动搭话。
+- **会话与效率控制**：支持 `/dir`、`/model`、`/reasoningEff`、`/permission`、`/new-session` 等指令及自然语言控制；支持一次性定时提醒、持久化 memo、非 QQ Web 会话完成自动提醒，以及网页归档会话后下一条 QQ 消息自动重开新会话。
 
-当前不支持通过 QQ 的“我的电脑”会话完整交互；这类消息可以被日志捕获，但回复会回到当前 QQ 自身，链路不完整。项目背景和架构说明见 [docs/project-overview.md](docs/project-overview.md)，使用导图见 [docs/usage-guide.html](docs/usage-guide.html)。
-
-## 功能
-
-- **QQ 遥控 Agent**：白名单用户可直接在 QQ 里发任务，插件会转成 DSH live session，并把最终回复发回 QQ。
-- **工作区、模型、权限和会话控制**：支持 `/dir`、`/new-session`、`/models`、`/model`、`/reasoningEff`、`/permission` 等 bridge 侧指令，也支持用自然语言完成常用切换。
-- **定时提醒和 memo**：支持一次性定时任务和备忘记录，数据通过 DSH `storageDomain` 持久化。
-- **Web 会话完成提醒**：非 QQ Web 会话结束后，可主动给管理员 QQ 发提醒；QQ 发起的会话只返回实际 Agent 回复。
-- **双接入路径**：默认推荐 NapCat / OneBot，本机个人使用更方便；也可切换腾讯官方 QQ Bot。
+---
 
 ## 快速开始
 
-> 当前自动安装向导只适配 Linux / WSL2 环境；原生 Windows 暂未适配。Windows 用户建议先在 WSL2 中使用。
-
 ### 系统要求
 
-- 已安装 DSH / DeepSeek Harness，且 `dsh web` 可正常启动。
-- Linux / WSL2 环境。Node.js 20+。
-- 选择 NapCat 路径时，需要[*先安装 NapCat*](#napcat-安装)，并且需要一个可扫码登录的 QQ 号。
-- 选择官方 QQ Bot 路径时，需要 QQ 开放平台机器人 AppID 和 AppSecret。
+- 已安装 DeepSeek Harness（`0.2.1-rc.3`），Node.js `20+`。
+- **NapCat 路径**：已安装 NapCat（Linux / WSL2 可使用 CLI，服务器亦可走 Docker 容器仅绑回环端口）。
+- **官方 Bot 路径**：已在 [QQ 开放平台机器人控制台](https://q.qq.com/qqbot/dashboard/) 创建应用并取得 AppID / AppSecret。
 
-### 三步上手
+> 自动安装向导 `setup` 面向 Linux / WSL2；Windows 桌面端建议直接在 DSH 设置页完成配置。
 
-1. 安装插件（推荐 npm 稳定版）：
+### 安装与启用
 
-   ```bash
-   pnpm dsh plugin --profile web add @yachangchang/dsh-qq-bridge
-   ```
-
-   也可以直接从 GitHub 安装当前仓库：
-
-   ```bash
-   pnpm dsh plugin --profile web add github:TomoyoNatsume/dsh-qq-bridge
-   ```
-
-   插件会作为 DSH bundle 写入 `dsh.profile.bundles`。刚安装时默认 `enabled: false`，不会连接 QQ，也不会启动 bridge。
-
-2. 启动 `dsh web`，进入左下角“设置” → `QQ bridge`。两种模式均先显示“通用配置”卡片，其中的模型、工作目录、访问模式等修改自动保存；卡片后切换接入方式，再显示 NapCat 或官方 QQ Bot 配置卡片。平台卡片不自动保存：NapCat 点击“启动/重启Napcat”，官方 QQ Bot 点击“保存并启动”，校验后提交并启用。进入 NapCat 设置页时会自动触发一次状态检测，也可点击“刷新状态”重新检测；卡片标题旁依次异步检测安装、启动、登录三个状态，并显示“正在检测”：安装通过 PATH 查找 napcat 指令，启动通过 napcat status 中的运行 QQ 判断，登录通过给运行 QQ 自发消息并回读验证；官方模式不显示状态 tag。
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/TomoyoNatsume/dsh-qq-bridge/main/docs/asset/config.png" alt="插件配置界面" width="760">
-</p>
-
-3. 保存成功后，在 QQ 里发送：
-
-   ```text
-   ping
-   ```
-
-   如果发送 `ping` 后没反应，请运行 `napcat log <你的QQ号>`，或查看 `~/Napcat/log/napcat_<你的QQ号>.log` 确认 NapCat 是否已经扫码登录。
-
-### NapCat 安装
-
-选择 NapCat 路径前，本机需要有 `napcat` 命令。
-
-#### 默认：安装当前最新版
-
-Linux / WSL2 推荐先使用 NapCat 官方 Rootless 安装器：
+从本仓库构建打包后，通过 DSH 插件管理安装（本机桌面与服务器 Web 需在各自 profile 分别安装）：
 
 ```bash
-cd ~
-curl -o napcat.sh https://raw.githubusercontent.com/NapNeko/NapCat-Installer/main/script/install.sh
-bash napcat.sh --docker n --cli y
+npm install
+npm run build
+npm pack
 ```
 
-安装后确认命令可用：
+在 DSH Web profile 中安装生成的包（或使用上游 npm 包）：
 
 ```bash
-napcat help
+pnpm dsh plugin --profile web add <生成的 .tgz 路径或包名>
 ```
 
-只需要安装 NapCat CLI，不需要自己先启动 QQ 后台。设置页填写 NapCat 登录 QQ 后点击“启动/重启Napcat”，目标 QQ 未运行时插件会先执行 `napcat stop` 顶掉现有 NapCat 实例，再按这个 QQ 号执行 `napcat start <QQ>`。首次使用时请打开 `~/Napcat/log/napcat_<你的QQ号>.log` 或执行 `napcat log <你的QQ号>` 查看日志并扫码登陆；NapCat 生成 OneBot 配置文件后，插件会继续写入正向 WebSocket 配置。
+安装后默认 `enabled: false`。启动 `dsh web`（或重开桌面端），进入左下角 **设置 → QQ bridge**：
 
-> NapCat 扫码登录时请打开 setup 打印的日志。日志里可能有多个二维码，请拉到最后一个二维码扫码；如果二维码过期，在 setup 里选择“二维码过期”，它会重启 NapCat 生成新的登录请求。
+1. 在「通用配置」中设定聊天模式、Provider / Model / 思考强度、工作目录与访问白名单（修改自动保存）。
+2. 选择 **NapCat / OneBot** 或 **腾讯官方 QQ Bot** 填入接入信息并启动。
+3. 在 QQ 发送 `ping`，收到回复即联通。
 
-#### 遇到“强制下线”：固定版本修复方案
+> 更新本地插件包或修改关键配置后，请**完全退出并重启** DSH。
 
-这不是默认安装方式。只有在正常安装后频繁出现 `[KickedOffLine]`、扫码后仍很快被强制下线时，再尝试下面的已验证组合：
+---
 
-- QQ `3.2.21-42086`
-- NapCat `4.15.19`
-- 全新 QQ profile（不复用旧的 `~/.config/QQ`）
-- Rootless NapCat 目录 `~/Napcat`
+## 接入方式与模式配置
 
-腾讯原 CDN 已删除 QQ `3.2.21-42086` 的独立 DEB/RPM。项目提供了一个修复脚本，它会直接从 NapCat `v4.15.19` 的固定镜像仓库下载并校验所需文件，不需要安装 Docker，也不会启动 Docker 容器。修复后的 QQ/NapCat 仍然是本机 Rootless 运行。
+### 1. NapCat / OneBot（推荐个人使用）
 
-> 修复脚本会停止旧 NapCat，将 `~/.config/QQ` 和 `~/Napcat` 移入带时间戳的备份目录，然后全新安装固定版本。QQ 会退出登录，安装后需要重新扫码。脚本已在 Linux x86_64 验证。
-
-如果已经 clone 了本项目，在项目根目录执行：
-
-```bash
-bash scripts/reinstall-napcat-4.15.19.sh
-```
-
-没有 clone 项目时，可以单独下载脚本后执行：
-
-```bash
-curl -fLO \
-  https://raw.githubusercontent.com/TomoyoNatsume/dsh-qq-bridge/main/scripts/reinstall-napcat-4.15.19.sh
-bash reinstall-napcat-4.15.19.sh
-```
-
-脚本会在替换旧安装前显示将要执行的操作并要求确认。完成后按提示启动、扫码和验证：
-
-```bash
-napcat start <你的QQ号>
-napcat log <你的QQ号>
-napcat status <你的QQ号>
-```
-
-`napcat status <你的QQ号>` 应能识别正在运行的实例。然后回到 DSH Web 设置页完成 OneBot 配置。
-
-> 保持这套固定组合时，不要执行 `napcat update` 或 `napcat rebuild`，它们会替换 QQ/NapCat 版本。如需升级，先备份 `~/.config/QQ` 和 `~/Napcat`。
-
-
-### 设置 / setup
-> 当前版本由设置页负责写入 bridge 配置并同步 QQ 专用 preset；也可以手动进入 `~/.dsh/profiles/web/` 执行 `pnpm exec dsh-qq-bridge setup`，通过 CLI 进行旧版 setup。
-
-设置页具体说明：
-- 选择 `NapCat / OneBot` 或 `腾讯官方 QQ Bot`。两种不同路径，前者为社区插件连接 QQ，非官方，功能强、限制少、通用性广，但小号容易被强制下线。后者为官方开放平台提供的 Bot，对接更稳，但是功能较少。
-- NapCat 路径需要输入 QQ 号（用于登录在 DSH 服务上、负责接收消息的号）、选择模型、单号/双号模式。单号模式下自己发送消息，自己接收（在 QQ 的好友列表里可以找到自己）。双号模式下两个号互相通信，需要输入发送端 QQ 号。
-- 可勾选“掉线后自动重启并提示扫码”。自动恢复独立监听 NapCat 日志（单号、双号均支持），只处理启用后的新增 `[KickedOffLine]` 下线通知。10 秒后执行 `napcat restart <登录QQ>`，用户打开 NapCat WebUI 或执行 `napcat log <登录QQ>` 查看二维码并扫码。插件不再读取旧版密码设置，启动/重启时会移除继承的密码回退环境变量；不清除 QQ 本地登录数据，仍有效的快速登录可由 NapCat 自行复用。
-- 等待扫码期间不会反复重启。10 分钟最多自动重启一次，每小时最多三次；重启失败时提示检查本机 CLI。扫码后收到 QQ 消息会恢复监控。请勿与旧的 `scripts/keep-napcat-alive.sh` 同时运行。本功能管理本机 NapCat CLI，不管理远程或 Docker 服务。
-- 账号与设备排查及本机证据见 [NapCat 掉线排查记录](docs/napcat-offline-diagnosis.md)。
-- NapCat 路径会检查 `napcat status <QQ>`；目标 QQ 未启动时会先执行 `napcat stop` 顶掉现有 NapCat 实例，再自动执行 `napcat start <QQ>`。用户只需先安装 NapCat CLI，不必手动启动 QQ 后台。
-- NapCat 路径会自动配置 OneBot 正向 WebSocket：`127.0.0.1:3001`。如果尚未找到 OneBot 配置文件，设置页会提示打开 NapCat 日志或执行 `napcat log <QQ>` 扫码登陆；如果配置成功，设置页会提示继续查看日志，确保已经扫码登陆。
-- 官方 QQ Bot 路径会要求先[创建机器人](https://q.qq.com/#/apps)，输入 AppID、AppSecret、沙箱开关，并通过 `pair <code>` 自动配置 `adminOpenId`。
-
->如果你是从旧版 setup 写 profile 的方式迁移到 bundle，新版启动时会自动清理 `~/.dsh/profiles/web/cordis.patch.yml` 里旧的 `id: dsh-qq-bridge` 插入项，并在同目录留下 `cordis.patch.yml.dsh-qq-bridge.bak` 备份，避免 bundle 和手写 profile 同时挂载同一个插件。
-
-### 验证
-
-从手机 QQ 发送：
-
-```text
-ping
-```
-
-成功后再试：
-
-```text
-当前工作目录是什么
-列出当前工作目录下的目录和文件
-/dir /home/xxx/project
-/models
-/model deepseek-v4-pro
-/reasoningEff high
-/permission workspace-write
-/new-session
-帮我把工作目录改到 /home/xxx/project
-请在 2026 年 9 月 1 号中午 12 点提醒我提交报告
-```
-
-如果是自己前台启动的 DSH web，启动成功后会看到类似界面：
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/TomoyoNatsume/dsh-qq-bridge/main/docs/asset/test0.png" alt="DSH 启动成功截图" width="760">
-</p>
-
-## 配置
-
-推荐在 DSH Web 左下角“设置”里的 `QQ bridge` 页面修改配置并保存。通过设置页保存时，NapCat 模式会写入本机 OneBot 配置，当前 DSH Web 进程会按新配置启动或重启 bridge。
-
-如果要手动排查，bundle 配置会进入 DSH profile 的 bundles 配置；旧版 setup 仍会写这个文件：
-
-```text
-~/.dsh/profiles/web/cordis.patch.yml
-```
-
-改完后重启 `dsh web`。重启 DSH web 时不需要再导出 `DSH_QQ_TOKEN` 或 `DSH_PERMISSION_MODE`；setup 或设置页已经把必要配置写入本机配置。
-
-### 四角色聊天
-
-在「设置 → QQ bridge → 通用配置」选择「四角色」，为每个角色填写名称、人设、Provider、Model 和思考强度。思考强度选「模型默认」时使用该模型的默认值。NapCat 和官方 QQ Bot 都使用当前配置的同一个 QQ 发送端。
-
-- 每条消息并行交给四个独立的 DSH Agent 会话。每个角色只看到自己的人设、本轮用户消息和此前完整的聊天记录，包括用户发言及四个角色的回复。
-- 每个 DSH 会话只追加尚未同步的聊天条目，已同步的消息继续沿用。旧版的拼接历史会在该会话下一轮转换为独立条目。
-- 角色完成后按完成顺序发出，例如 `gpt: 回复内容`。同一聊天的新消息会等这一轮结束。私聊和各群的聊天记录独立保存，群聊沿用白名单与 @机器人规则。
-- `/new-session` 等当前轮回复结束，归档该聊天的记录和旧 DSH 会话，随即创建四个新会话。聊天记录和会话 ID 保存在 profile 下的 `plugins/dsh-qq-bridge/<账号命名空间>/role-chat.json`，重启会接续当前会话。
-
-手动配置使用 `agent.mode: multi` 和 `agent.roles`。角色列表含四项，每项填写 `id`、`name`、`persona`、`provider`、`model`、`reasoningEffort`。保持 `id` 稳定可在修改名称、人设或模型后继续使用原 DSH 会话。
-
-### 选择 QQ 接入方式
-
-#### NapCat / OneBot
-
-默认推荐走 NapCat / OneBot，适合个人本机使用。setup 会检查 `napcat` 命令、启动状态和登录日志，自动配置 OneBot 正向 WebSocket 到 `127.0.0.1:3001`，并创建或复用 OneBot access token。
-
-支持两种用法：
-
-- 双号模式：一个 QQ 号登录 DSH，监听消息；另一个 QQ 号给 DSH 发送指令。推荐新用户直接用这个。
-- 单号模式：同一个 QQ 登录 NapCat，并从手机 QQ 给自己发消息。
-
-> 双号模式下，登录 DSH 的账号不建议用不常用小号，因为不常用的号登录可能会被腾讯服务端 kill 掉。
->
-> 单号模式下，可以收到 `Agent 完成自动提醒`，但可能无法收到消息提示。
-
-配置示例：
+支持**双号模式**（推荐，机器人号收消息、主号发指令）与**单号模式**（主号给自己发消息，需开启 `selfLogInput` 监听日志）。OneBot 正向 WebSocket 推荐仅监听 `127.0.0.1:3001` 并配置强 access token：
 
 ```yaml
 platform: napcat
 napcat:
   wsUrl: ws://127.0.0.1:3001
   token: "<NapCat OneBot access token>"
-
 ```
 
-已移除自发消息保活及相关设置，旧版 `selfKeepAlive` 配置不再生效。设置页和重启恢复检测只查询 OneBot 的账号信息和在线状态，不发送 QQ 探测消息；接口返回在线不等同于已经验证消息投递。
+- **Linux / WSL2 安装 NapCat**：
+  ```bash
+  curl -o napcat.sh https://raw.githubusercontent.com/NapNeko/NapCat-Installer/main/script/install.sh
+  bash napcat.sh --docker n --cli y
+  ```
+- **掉线自愈**：设置页可勾选「掉线后自动重启并提示扫码」，仅监控本机 NapCat CLI 的新增 `[KickedOffLine]` 日志，内置频控（10 分钟最多 1 次、每小时最多 3 次），**请勿与旧脚本 `scripts/keep-napcat-alive.sh` 同时运行**。
+- **频繁强制下线排查**：如反复出现 `[KickedOffLine]`，可参考 [docs/napcat-offline-diagnosis.md](docs/napcat-offline-diagnosis.md)，或使用固定版本修复脚本 `bash scripts/reinstall-napcat-4.15.19.sh`（QQ `3.2.21-42086` + NapCat `4.15.19`，会备份现有 `~/.config/QQ` 与 `~/Napcat` 后重装，需重新扫码）。
 
-每条保活消息都会附带唯一 `uid`。Bridge 最多等待 OneBot 动作响应 2 秒；连续 3 次超时会在 DSH 日志中将 NapCat 登录状态标记为 `logged-out`，任意一次成功则立即标记或恢复为 `logged-in`。
+### 2. 腾讯官方 QQ Bot
 
-#### 腾讯官方 QQ Bot
-
-官方路径适合想用开放平台机器人账号的用户。需要先到 [QQ 开放平台机器人控制台](https://q.qq.com/qqbot/dashboard/) 创建机器人，然后输入 AppID、AppSecret 和沙箱开关。
-
-第一次配置时不需要手动找 `adminOpenId`：setup 会临时连接 QQBot 网关，生成一次性 `pair <code>`，你用管理员 QQ 发给机器人后，插件会自动读取 sender openid、回复“配对成功”，并写入 `official.adminOpenId`。
-
-> 由于腾讯开放平台规则限制，当前插件若走 QQ Bot 路径，则不支持 `Agent 完成自动提醒` 功能。
->
-> 官方 QQ Bot 的主动提醒有额度限制。插件在官方模式下默认关闭 `notifications.agentReply.enabled`，避免触发 `40034122` / `召回消息已达区间上限`。
-
-切到腾讯官方 QQ Bot 时，推荐重新运行 setup。手动配置示例：
+无需扫码，但受官方平台限制默认关闭 `notifications.agentReply.enabled`（避免触发 `40034122` 主动消息额度上限）：
 
 ```yaml
 platform: official
 official:
-  appId: "<QQ 开放平台 AppID>"
-  appSecret: "<QQ 开放平台 AppSecret>"
+  appId: "<AppID>"
+  appSecret: "<AppSecret>"
   adminOpenId: "<管理员 openid>"
   allowlistOpenIds: []
   sandbox: false
 access:
-  adminQq: 0
-  allowlist: []
-  commandPrefix: ""
   mode: whitelist
 notifications:
   agentReply:
     enabled: false
 ```
 
-`adminOpenId` 是“你的 QQ 用户在这个机器人应用下的 openid”，不是 QQ 号，也不是 AppID。第一次不知道它时，用 setup 自动配对最稳。
+首次获取 `adminOpenId` 可在仓库目录运行一次配对向导（不修改 DSH profile）：
 
-### 更改模型
-
-设置页“通用配置”的 Provider、Model 和思考强度读取 DSH 当前模型目录，新增提供方后自动更新。切换提供方时选择其有效模型；思考档位按模型能力显示，不支持的旧档位恢复为“模型默认”。三项修改均自动保存，平台启动按钮也会保留已选思考强度。日常聊天建议 `medium`，复杂问题可用 `high`。
-
-修改 `agent.provider` 和 `agent.model`：
-
-```yaml
-agent:
-  provider: deepseek-official
-  model: deepseek-v4-pro
-  cwd: "~"
-  preset: dsh-qq-bridge
-  ackMessage: 收到，正在处理...
+```bash
+npm run pair:official
 ```
 
-- `provider`：DSH 里已配置好的模型提供方。
-- `model`：该 provider 下的模型 id。
-- `cwd`：QQ Agent 默认工作目录，默认是 `~`；`/dir <目录>` 会覆盖当前 QQ 会话的后续 session 目录。
-- `preset`：QQ 会话使用的 DSH agent preset。setup 会安装 `dsh-qq-bridge` 专用 preset；普通 Web 会话不选它就不会看到 QQ 回复风格 skill。
+按提示输入 AppID 与 AppSecret，用管理员 QQ 向机器人发送终端显示的配对口令，将输出的 OpenID 复制回设置页即可。
 
-#### Antigravity (agy) 私聊
+### 3. 四角色聊天（`agent.mode: multi`）
 
-在 QQ Bridge 的 Provider 菜单选择 agy，再选择模型和思考强度。主人和获准的好友私聊使用各自的人格和历史，活跃聊天复用 ACP 会话。纯图片、图文混发和多图均可发送，图片随当轮进入 ACP，新建会话时回放文字历史。
+在「设置 → QQ bridge → 通用配置」切换为 **四角色**，分别为 4 个角色设置名称、人设、Provider、Model 与思考强度（手动配置对应 `agent.mode: multi` 与 `agent.roles` 四项，保持每项 `id` 稳定可在改名或换模型后继续沿用原 DSH 会话）：
 
-在 Linux 部署时，把下列环境变量提供给 DSH 服务，并用该账号完成 agy 登录。
+- 每条消息并行交给 4 个独立 DSH 会话，角色看到各自人设与共享完整聊天记录（含用户及四角色发言），且仅增量追加未同步的新条目。
+- 谁先生成完谁先发（如 `gpt: ...`），同一聊天的新消息等待本轮结束；私聊与各群独立存储记录于 `plugins/dsh-qq-bridge/<账号命名空间>/role-chat.json`。
+- 发送 `/new-session` 会等当前轮发完，归档记录与旧会话并重建四个新会话。
+
+### 4. Antigravity (`agy`) 私聊
+
+在通用配置的 Provider 菜单选择 `agy` 并选定模型与思考强度后，主人与获准好友的私聊走独立 ACP 会话（活跃聊天自动复用，纯图/多图随当轮透传，新会话回放文字历史）。
+
+Linux 服务部署需向 DSH 进程提供以下环境变量，并先以专用账号完成 `agy` 登录：
 
 | 环境变量 | 用途 |
 |---|---|
-| `DSH_QQ_AGY_ROOT` | 安装目录，包含 `bin/agy`、`workspace` 和 `public-workspace`。两个工作区需要 `.agents/agents` 子目录。 |
-| `DSH_QQ_AGY_USER` | DSH 通过 `runuser` 启动 agy 时使用的专用账号。 |
-| `DSH_QQ_AGY_HOME` | 专用账号用于保存 agy 登录状态的 home。 |
-| `DSH_QQ_AGY_PERSONA_DIR` | 存放 `persona_versions.json` 和 `qq_public_persona.json` 的目录。 |
-| `DSH_QQ_AGY_PROXY` | 可选。传给 agy 子进程的 HTTP 和 HTTPS 代理地址。 |
+| `DSH_QQ_AGY_ROOT` | 安装目录，含 `bin/agy`、`workspace` 与 `public-workspace`（两个工作区需含 `.agents/agents`） |
+| `DSH_QQ_AGY_USER` | DSH 通过 `runuser` 启动 `agy` 使用的专用系统账号 |
+| `DSH_QQ_AGY_HOME` | 专用账号保存 `agy` 登录状态的 HOME 目录 |
+| `DSH_QQ_AGY_PERSONA_DIR` | 存放 `persona_versions.json` 与 `qq_public_persona.json` 的目录 |
+| `DSH_QQ_AGY_PROXY` | 可选，传递给 `agy` 子进程的 HTTP / HTTPS 代理地址 |
 
-### 更改确认消息和超时
+---
 
-收到有效 QQ 指令后，插件会先回复 `agent.ackMessage`。设为空字符串 `""` 可以关闭确认消息：
+## 指令与自然语言控制
 
-```yaml
-agent:
-  ackMessage: 收到，正在处理...
-```
+默认空前缀（`access.commandPrefix: ""`）时，白名单用户可直接发送以下内置控制命令（命中后由 Bridge 独占消费，不进入 Agent）；如配置了前缀（如 `/dsh`），需加前缀调用：
 
-默认情况下，QQ 对话不会限制 Agent 等待时间，会一直等到本轮 DSH Agent 完成。需要保留超时保护时，可手动设置 `timeoutMs` 和 `timeoutMessage`：
+| 指令 | 作用 |
+|---|---|
+| `/help` | 查看 Bridge 内置控制命令说明 |
+| `/dir <目录>` | 切换当前 QQ 会话工作目录（下一条消息启用新会话） |
+| `/models` | 列出当前 Provider 可用模型 ID |
+| `/model <模型名>` | 动态切换当前会话模型（下一次请求生效） |
+| `/reasoningEff <等级>` | 切换当前会话思考强度 |
+| `/permission [preset]` | 查看或通过 DSH 原生命令切换当前 live session 权限（如 `workspace-write`） |
+| `/new-session` | 等本轮发完后新开会话（保留目录、模型、推理等级及 memo / timer） |
 
-```yaml
-agent:
-  timeoutMs: 120000
-  timeoutMessage: agent 无响应，请稍后重试。
-```
+在 QQ 专用预设下，也支持直接用自然语言切换目录/模型/权限、新开会话、设一次性定时提醒（如“明天中午 12 点提醒我提交报告”）或记录 memo（按同 target + 稳定 key 更新），数据落盘于 `~/.dsh/storages/dsh_qq_bridge.json`。
 
-手动 YAML 中的 `timeoutMs` 是内部毫秒字段。设置 `timeoutMs` 后，超时会回复 `timeoutMessage`。
+---
 
-### QQ 回复风格 Skill
+## 安全与可靠性约定
 
-setup 会同步一个 QQ 专用 preset 到：
+- **坚持白名单**：保持 `access.mode: whitelist`，仅放行 `adminQq` / `allowlist` / `groupAllowlist`（或官方 Bot 的 `adminOpenId` / `allowlistOpenIds`）。
+- **只监听回环地址**：OneBot WS 绑定 `127.0.0.1:3001` 并启用随机 token，勿直接暴露公网。
+- **凭据不入库**：严禁提交 `cordis.patch.yml`、OneBot token、AppSecret、API Key、`delivery.json`、`role-chat.json` 与个人 QQ 号。
+- **Shell 默认关闭**：保持 `shell.enabled: false`，避免 QQ 消息直接触发本机 Shell。
+- **单号模式禁重放**：保持 `selfLogInput.replayOnStart: false`，防止重启把历史日志重跑一遍。
 
-```text
-~/.dsh/.agent-presets/dsh-qq-bridge
-```
-
-这个 preset 挂载随附的回复风格 skill：
-
-```text
-~/.dsh/.agent-presets/dsh-qq-bridge/skills/qq-session-reply-style/SKILL.md
-~/.dsh/.agent-presets/dsh-qq-bridge/skills/qq-session-reply-style/references/reply-style.md
-```
-
-默认规则：
-
-- 先给结论。
-- 回复尽量简明扼要。
-- 不用 Markdown 风格，用纯文本，可以多用 emoji。
-
-这些文件只是普通 skill 文件：桥接层**不会**在 QQ 回合里自动发送 `/qq-session-reply-style`，也不会给消息附加任何来源说明或临时风格标记。QQ 入站消息的原文会逐字交给 Agent（`executor.run` 收到的 payload 与用户原文完全一致），需要时由 Agent 自己按 `SKILL.md` 的描述调用该 skill。
-
-如果你要改 QQ 回复风格，优先改上面的 `references/reply-style.md`；`SKILL.md` 只作为入口和模块索引。注意保留“只适用于 dsh-qq-bridge QQ 会话、不要写入记忆、不要影响普通 DSH Web 会话”的限制。
-
-旧配置项 `agent.qqReplyStyleSkill` 仍可解析（已有配置不会报错），但已不再产生任何注入或 skill 调用：
-
-```yaml
-agent:
-  qqReplyStyleSkill:
-    enabled: false
-```
-
-### 更改指令前缀
-
-修改 `access.commandPrefix`：
-
-```yaml
-access:
-  commandPrefix: /dsh
-```
-
-例如改成 `/ai` 后，QQ 里就要发送：
-
-```text
-/ai ping
-```
-
-### 更改允许使用的人
-
-NapCat 模式使用 QQ 号鉴权。只允许自己使用：
-
-```yaml
-access:
-  adminQq: <你的QQ号>
-  allowlist: []
-  mode: whitelist
-```
-
-允许额外 QQ：
-
-```yaml
-access:
-  adminQq: <你的QQ号>
-  allowlist: [10001, 10002]
-  mode: whitelist
-```
-
-官方 QQ Bot 模式使用 openid 鉴权：
-
-```yaml
-platform: official
-official:
-  adminOpenId: "<管理员 openid>"
-  allowlistOpenIds: ["<允许的用户 openid>"]
-access:
-  adminQq: 0
-  allowlist: []
-  mode: whitelist
-```
-
-不建议把 `mode` 改成 `open`，除非你明确知道风险。
-
-### 单号模式日志
-
-单号模式会读取 NapCat 日志，把“自己给自己”的消息转成内部消息：
-
-```yaml
-selfLogInput:
-  enabled: true
-  logPath: /home/<你的Linux用户名>/Napcat/log/napcat_<你的QQ号>.log
-  pollIntervalMs: 1000
-  replayOnStart: false
-```
-
-如果你是“主号发给机器人小号”，通常可以关闭：
-
-```yaml
-selfLogInput:
-  enabled: false
-```
-
-### Agent 回复提醒
-
-`notifications.agentReply.enabled` 控制“非 QQ 会话中 Agent 完成一轮回复后，主动给管理员发提醒”：
-
-```yaml
-notifications:
-  agentReply:
-    enabled: true
-```
-
-NapCat 模式默认开启；官方 QQ Bot 模式默认关闭。QQ 自身发起的对话不会再额外发送“主人，您收到一条 Agent 回复...”提醒，只保留实际 Agent 回复。
-
-### DSH 默认权限
-
-setup 可选修改 `~/.dsh/settings.yaml`：
-
-```yaml
-permission:
-  defaultPreset: workspace-write
-```
-
-可选项：
-
-- `workspace-write`：较安全。Agent 只能写工作区和允许的临时目录，越权操作需要网页端审批。
-- `danger-full-access`：最省心但风险最高。Agent 可直接访问本机进程权限能访问的路径，且不会弹出审批。
-
-这里配置的是 DSH 后续新会话的默认权限；QQ 里发送 `/permission <preset>` 会通过 DSH 原生命令切换当前 QQ live session 的权限，不会改写 `settings.yaml`。
-- 保持现有 settings：setup 不修改 DSH 全局默认权限。
-
-这个默认值只影响之后新建的 Web 会话，不改变已经打开的会话。
-
-### 本地回显测试
-
-只想测试 QQ 链路、不接 DSH Agent 时，可以用本地回显模式：
-
-```bash
-DSH_QQ_ADMIN=<你的QQ号> \
-DSH_QQ_TOKEN=<NapCat OneBot access token> \
-DSH_QQ_SELF_LOG=true \
-bash scripts/start-local-echo.sh
-```
-
-发送 `ping`，预期回复：
-
-```text
-echo: ping
-```
-
-正式使用 `pnpm dsh web` 时，以 `cordis.patch.yml` 为准，不需要这些环境变量。
-
-## 指令
-
-### QQ Agent 消息处理
-
-在 QQ 里直接发送消息即可触发 DSH：
-
-```text
-当前工作目录是什么
-帮我把工作目录改到 /home/xxx/project
-请在 2026 年 9 月 1 号中午 12 点提醒我提交报告
-```
-
-插件会先发送确认消息，随后把 Agent 的最终回复发回 QQ。默认前缀为空，白名单用户的所有消息都会进入 Agent；可在 `access.commandPrefix` 中改回 `/dsh`、`/ai` 等前缀。
-
-如果 QQ 消息到达时 Web UI 里有非 QQ 主会话正在运行，插件会先回复 `当前 Web 会话正在运行，请稍后...`，并把这条 QQ Agent 消息放入全局 FIFO 队列；等 Web 会话结束后再发送正常确认消息并执行。QQ 自己的 `qq-...` 会话和 subagent 不会触发这个阻塞，bridge 侧控制命令也会继续立即处理。
-
-### Bridge 侧指令
-
-默认 `commandPrefix: ""` 时，白名单用户可直接发送下面的 bridge 侧指令；如果配置了 `/dsh`、`/ai` 等前缀，则需要写成 `/dsh /dir /home/xxx/project` 这种形式。bridge 侧指令不会进入 Agent。
-
-内置控制命令优先于 Agent 消息处理；命中后会独占消费，不会把控制命令误发给 Agent。模型和推理等级切换会按 Web UI 的 model selection 机制在下一次模型请求生效，正在运行的请求不受影响。权限切换会调用 DSH 原生 `/permission` command，作用于当前 QQ 会话的 live session。
-
-| 指令 | 示例 | 作用 | 作用范围 |
-| --- | --- | --- | --- |
-| `/help` | `/help` | 查看 bridge 侧控制指令说明。 | 当前 QQ 会话 |
-| `/dir <目录>` | `/dir /home/xxx/project` | 切换当前 QQ 会话工作目录；目录存在时下一条消息会使用新的 Agent session。 | 当前 QQ 会话 |
-| `/models` | `/models` | 列出当前 provider 可用模型。 | 当前 QQ 会话 |
-| `/model <模型名>` | `/model deepseek-v4-pro` | 切换当前 QQ 会话模型；模型名必须和 `/models` 列出的 id 完全一致。 | 当前 QQ 会话 |
-| `/reasoningEff <等级>` | `/reasoningEff high` | 切换当前 QQ 会话推理等级。 | 当前 QQ 会话 |
-| `/permission` | `/permission` | 查看当前权限 preset 和可用 preset。 | 当前 QQ live session |
-| `/permissions` | `/permissions` | 同 `/permission`，用于查看权限 preset。 | 当前 QQ live session |
-| `/permission <preset>` | `/permission workspace-write` | 调用 DSH 原生 `/permission` command 切换当前 live session 权限。 | 当前 QQ live session |
-| `/new-session` | `/new-session` | 为当前聊天新开 Agent session；保留工作目录、模型、推理等级和 memo/timer。 | 当前 QQ 聊天 |
-
-### 自然语言控制
-
-QQ 专用 Agent preset 还支持自然语言控制。Agent 会输出私有 `<dsh-qq-bridge-control>...</dsh-qq-bridge-control>`，插件拦截后执行，不会把控制块内容发回 QQ。
-
-自然语言控制可切换工作目录、模型、推理等级和权限，也可新开 Agent session、创建一次性定时任务或记录 memo。定时任务和 memo 会通过 DSH `storageDomain` 持久化；默认 Web JSON 后端会落到 `~/.dsh/storages/dsh_qq_bridge.json`。memo 和 timer 按 QQ target（私聊用户或群）归属，同一个 target 下可跨 Agent session 访问，不跨不同 target。memo 会按稳定 item key 更新同一条记录，例如先记 `TCL电视价格为3200`、再改成 `TCL电视价格为4000` 会覆盖同一条。插件启动和每 2 小时扫描一次 pending timer，2 小时内到期的任务才会挂短计时器，到点后触发记录来源 Agent session 并主动发回原 QQ target，执行结束后删除该 timer。
-
-| 用户说法示例 | Agent 控制动作 | 作用 |
-| --- | --- | --- |
-| `帮我把工作目录改到 /home/xxx/project` | `set_cwd` | 与 `/dir <目录>` 一致，切换当前 QQ 会话工作目录。 |
-| `把模型改成 deepseek-v4-pro` | `set_model` | 与 `/model <模型名>` 一致，动态切换当前 QQ 会话模型。 |
-| `推理等级改成 high` | `set_reasoning_effort` | 与 `/reasoningEff <等级>` 一致，动态切换当前 QQ 会话推理等级。 |
-| `权限改成 workspace-write` | `set_permission` | 与 `/permission <preset>` 一致，切换当前 QQ live session 权限。 |
-| `帮我新开一个会话` | `new_session` | 与 `/new-session` 一致，为当前聊天新开 Agent session。 |
-| `请在 2026 年 9 月 1 号中午 12 点提醒我提交报告` | `schedule_task` | 创建一次性持久化 timer；按 QQ target 归属，到点执行后删除。 |
-| `记一下：2026/07/08 日收入 350 元` | `save_memo` | 持久化记录一条 memo；按 QQ target 和 item key 归属，同 target 可跨 Agent session 访问，同 key 会更新同一条。 |
-
-## 安全
-
-这个项目的定位是“私用 QQ 遥控自己的 DSH”，默认按本机私有服务来设计。建议保持下面几条。
-
-### 保持白名单
-
-默认 `mode: whitelist`，只允许 `adminQq` / `allowlist`，或官方模式下的 `adminOpenId` / `allowlistOpenIds` 触发。`mode: open` 表示任何能给这个 QQ 或机器人发消息的人都可能触发 DSH，只适合临时调试。
-
-### 指令入口
-
-默认 `commandPrefix: ""`，白名单用户的普通消息会直接进入 DSH。设置为 `/dsh`、`/ai` 等非空值后，只有以该前缀开头的消息才会进入 DSH。`/dir <目录>`、`/new-session`、`/models`、`/model <模型名>`、`/reasoningEff <等级>`、`/permission [preset]`、`/permissions`、`/help` 是内置 bridge 控制命令，默认空前缀时可直接发送。
-
-### OneBot 只监听本机
-
-NapCat 正向 WebSocket 推荐：
-
-```text
-监听地址: 127.0.0.1
-端口: 3001
-access token: <随机 token>
-```
-
-不要把 NapCat OneBot WS 监听地址改成 `0.0.0.0` 或公网 IP，除非你已经准备好防火墙、内网/VPN 隔离和强 token。
-
-### 不提交本机凭据
-
-不要把 `~/.dsh/profiles/web/cordis.patch.yml`、QQ 凭据、NapCat WebUI token、OneBot access token、QQ 开放平台 AppSecret、DeepSeek API Key 提交到仓库或公开日志。
-
-### shell handler 默认关闭
-
-配置示例里保持：
-
-```yaml
-shell:
-  enabled: false
-```
-
-QQ 消息默认不会直接执行 shell 命令。即使之后扩展 shell 能力，也应继续保持白名单、强指令前缀和 DSH 自身权限控制。
-
-### 单号模式不回放历史日志
-
-单号模式默认：
-
-```yaml
-selfLogInput:
-  replayOnStart: false
-```
-
-这能避免 DSH 重启时把历史消息重新执行一遍。
-
-## 停止服务
-
-如果是前台运行的 `pnpm dsh web`，在终端按：
-
-```text
-Ctrl+C
-```
-
-如果你曾用旧版 setup 后台启动过 DSH web，可以用遗留管理命令清理：
-
-```bash
-dsh-qq-bridge web status
-dsh-qq-bridge web logs
-dsh-qq-bridge web stop
-```
-
-如果只想停 QQ 机器人能力，也可以在 DSH Web 的插件管理里禁用 `dsh-qq-bridge`，然后重启 `dsh web`。
+---
 
 ## 常见问题
 
-### QQ 消息没回复
+- **发送后没回复**：NapCat 路径先查 `napcat log <QQ号>`，确认在线、正向 WS 端口 `3001` 与 token 一致、发信 QQ 在白名单内；若 DSH 正在等待工具审批，请到 Web 端确认或调整权限。
+- **官方 Bot 日志报 `40034122`**：主动提醒额度已满，保持 `notifications.agentReply.enabled: false`，不影响正常问答回复。
+- **本地只测 QQ 链路不走 Agent**：可用 `DSH_QQ_ADMIN=<QQ号> DSH_QQ_TOKEN=<token> bash scripts/start-local-echo.sh`，发 `ping` 返回 `echo: ping`。
+- **改完源码未生效**：插件实际加载编译后的 `dist/`，改完 `src/` 必须运行 `npm run build` 并重新打包安装，再重启 DSH。
 
-NapCat 模式先看日志：
+---
 
-```bash
-napcat log <你的QQ号>
-```
-
-重点检查：
-
-- NapCat 是否还在线。
-- NapCat 是否已经扫码登录；默认日志文件是 `~/Napcat/log/napcat_<你的QQ号>.log`。
-- 正向 WebSocket 是否开启，端口是否是 `3001`。
-- `~/.dsh/profiles/web/cordis.patch.yml` 里的 `napcat.token` 是否等于 OneBot access token。
-- 如果你设置了非空 `commandPrefix`，消息是否以该前缀开头。
-- `adminQq` 是否填的是发消息的 QQ。
-- 单号模式下 `selfLogInput.logPath` 是否正确。
-
-官方 QQ Bot 模式重点检查：
-
-- `platform` 是否为 `official`。
-- `official.appId` / `official.appSecret` 是否来自同一个机器人应用。
-- 沙箱测试时 `official.sandbox` 是否为 `true`，正式环境是否为 `false`。
-- `official.adminOpenId` 是否是给这个机器人发消息的用户 openid。
-- `access.mode` 是否已经从临时 `open` 改回 `whitelist`。
-
-### 发送后一直无回复
-
-如果 DSH 卡在工具审批，通常是当前会话正在等待网页端确认。可以在 DSH Web 页面手动批准当前工具调用，或调整当前会话权限。修改 `~/.dsh/settings.yaml` 后，需要重启 `dsh web` 并新建/刷新 Web 会话，新的默认权限才会生效。
-
-### 官方 QQ Bot 日志出现 40034122
-
-`40034122` / `召回消息已达区间上限` 通常是官方主动提醒额度耗尽。保持：
-
-```yaml
-notifications:
-  agentReply:
-    enabled: false
-```
-
-这不代表正常对话回复失败。
-
-### 返回 `<tool_calls>` 或 DSML 文本
-
-通常是模型/工具调用模式不匹配，或插件版本不是最新构建。先执行：
+## 开发、上游关系与许可
 
 ```bash
-npm run build
+npm install
+npm test          # 运行 40 个 vitest 测试文件
+npm run build     # 编译 TypeScript 与设置页客户端（dist/ 为提交型产物）
 ```
 
-然后重启 DSH。推荐使用已验证过的 `deepseek-v4-pro` 配置。
+详细设计背景与部署排查见 [docs/project-overview.md](docs/project-overview.md) 与 [docs/deploy-wsl2-local.md](docs/deploy-wsl2-local.md)。
 
-### 临时调试时想用一次性 patch 启动
-
-正式使用建议通过 setup 写入 `~/.dsh/profiles/web/cordis.patch.yml` 后执行 `pnpm dsh web`。临时调试时，也可以把一次性 patch 写到 `/tmp/dsh-qq-bridge-agent.patch.yml`，并在 patch 里写入 `napcat.token`，然后从 DSH 项目目录执行：
-
-```bash
-pnpm dsh web --patch /tmp/dsh-qq-bridge-agent.patch.yml
-```
-
-后台运行并写日志：
-
-```bash
-pnpm dsh web --patch /tmp/dsh-qq-bridge-agent.patch.yml \
-  > /tmp/dsh-qq-agent.log 2>&1 &
-```
-
-## 上游与原仓库
-
-本仓库是 [TomoyoNatsume/dsh-qq-bridge](https://github.com/TomoyoNatsume/dsh-qq-bridge) 的个人 fork，仅用于本机个人使用与适配，**不向上游提交 PR**。
-
-- 上游（原作者）：`upstream` → `https://github.com/TomoyoNatsume/dsh-qq-bridge`
-- 本 fork（个人）：`origin` → `https://github.com/lxl8182/dsh-qq-bridge`
-- 同步方式：`git fetch upstream && git merge upstream/main`；本地 `main` 直接开发并推送到 `origin/main`，不向 `upstream` 推送，不 force-push。
-
-本 fork 基于上游 `6e13f95` 开发，本批目标版本 `1.0.6-neko.11`（Windows 桌面版 DSH `0.2.1-rc.3` 本机适配）。MIT License 与原作者版权沿用上游，见 [LICENSE](LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-## 许可与致谢
-
-本项目使用 MIT License 发布，见 [LICENSE](LICENSE)。第三方依赖、协议与外部项目说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-本项目会连接或参考以下项目/协议：
-
-- [NapCatQQ](https://github.com/NapNeko/NapCatQQ)：提供 QQ / OneBot 运行端点。本项目不打包、不修改、不再分发 NapCatQQ，只要求用户自行安装并运行。
-- 腾讯 QQ 开放平台：提供可选的官方机器人运行端点；本项目通过 `@tencent-connect/qqbot-nodejs` 连接。
-- [OneBot](https://github.com/botuniverse/onebot)：聊天机器人接口标准，本项目通过 OneBot WebSocket 协议与 NapCat 通信。
-- [DeepSeek Harness / DSH](https://github.com/deepseek-ai/deepseek-harness)：本插件运行所在的 Host / Agent 环境。
-- `ws`、`zod` 等 npm 依赖：详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+本仓库基于 [TomoyoNatsume/dsh-qq-bridge](https://github.com/TomoyoNatsume/dsh-qq-bridge) 开发，仅用于个人适配与演进，不向上游提交 PR。沿用上游 **MIT License**（见 [LICENSE](LICENSE) 与 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)），感谢原作者以及 [NapCatQQ](https://github.com/NapNeko/NapCatQQ)、[OneBot](https://github.com/botuniverse/onebot) 与 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 社区。
